@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Breakout (Retro 1976-style) — v5 win + game over + new scoring</title>
+<style>
+  :root { --bg:#000; --fg:#fff; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; height:100%; }
+  .wrap { display:grid; place-items:center; height:100%; gap:12px; }
+  #frame { position:relative; border:2px solid #666; box-shadow:0 0 0 8px #222 inset; width:800px; background:#000; padding:8px; }
+  #screen { display:block; background:#000; width:800px; height:600px; image-rendering: pixelated; }
+  .hud { width:800px; display:flex; justify-content:space-between; letter-spacing:1px; user-select:none; font-size:14px; }
+  .hint { opacity:.7; width:800px; font-size:12px; text-align:center; }
+  .overlay {
+    position:absolute; inset:8px;
+    display:none; align-items:center; justify-content:center; flex-direction:column;
+    background: rgba(0,0,0,0.85); color:#fff; text-align:center;
+    border:1px solid #666;
+  }
+  .overlay.show { display:flex; }
+  .title { font-size:32px; letter-spacing:2px; margin-bottom:8px; }
+  .small { font-size:14px; opacity:.9; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud"><span id="scoreLbl">SCORE 0000</span><span id="livesLbl">BALLS 3</span></div>
+    <div id="frame">
+      <canvas id="screen" width="800" height="600"></canvas>
+      <div id="winOverlay" class="overlay">
+        <div class="title">CONGRATULATIONS!</div>
+        <div id="winScore" style="margin-bottom:12px;">SCORE 0000</div>
+        <div class="small">You’ve cleared the wall.</div>
+        <div class="small">Press SPACE to play again.</div>
+      </div>
+      <div id="overOverlay" class="overlay">
+        <div class="title">GAME OVER</div>
+        <div id="overScore" style="margin-bottom:12px;">SCORE 0000</div>
+        <div class="small">Press SPACE to try again.</div>
+      </div>
+    </div>
+    <div class="hint">ARROWS: move | SPACE: launch/serve | R: restart — first keypress enables sound</div>
+  </div>
+<script>
+(() => {
+  const W=800,H=600, PLAY_L=10, PLAY_T=10, PLAY_R=W-10, PLAY_B=H-10;
+  const canvas = document.getElementById('screen');
+  const ctx = canvas.getContext('2d', { alpha:false });
+  const scoreLbl = document.getElementById('scoreLbl');
+  const livesLbl = document.getElementById('livesLbl');
+  const winOverlay = document.getElementById('winOverlay');
+  const winScore = document.getElementById('winScore');
+  const overOverlay = document.getElementById('overOverlay');
+  const overScore = document.getElementById('overScore');
+
+  // --- Tiny WebAudio Beeper ---
+  let actx = null, masterGain = null;
+  let soundEnabled = false;
+  function ensureAudio(){
+    if (soundEnabled) return;
+    try{
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = actx.createGain();
+      masterGain.gain.value = 0.08; // overall quiet
+      masterGain.connect(actx.destination);
+      soundEnabled = true;
+    }catch(e){ /* ignore */ }
+  }
+  function beep({freq=440, dur=0.06, type='square', attack=0.001, decay=0.04, vol=1.0}){
+    if (!soundEnabled) return;
+    const t0 = actx.currentTime;
+    const osc = actx.createOscillator();
+    const g = actx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(vol, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + decay + dur);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + attack + decay + dur + 0.02);
+  }
+  function sweep({from=440,to=880,dur=0.25,type='square',vol=1.0}){
+    if(!soundEnabled) return;
+    const t0 = actx.currentTime;
+    const osc = actx.createOscillator();
+    const g = actx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(from, t0);
+    osc.frequency.linearRampToValueAtTime(to, t0+dur);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(vol, t0+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t0); osc.stop(t0+dur+0.02);
+  }
+  const sounds = {
+    wall:   () => beep({freq: 520, dur:0.03, type:'square', vol:0.8}),
+    paddle: (rel=0) => beep({freq: 300 + Math.abs(rel)*200, dur:0.04, type:'square', vol:0.9}),
+    brick:  () => beep({freq: 800, dur:0.035, type:'square', vol:0.7}),
+    life:   () => { beep({freq: 220, dur:0.12, type:'triangle', vol:0.8}); },
+    level:  () => { sweep({from:660,to:990,dur:0.15,vol:0.6}); setTimeout(()=>sweep({from:740,to:1200,dur:0.18,vol:0.6}), 160); },
+    over:   () => { sweep({from:300,to:140,dur:0.4,type:'triangle',vol:0.7}); }
+  };
+  // enable audio on first gesture
+  const gesture = () => { ensureAudio(); window.removeEventListener('keydown', gesture); window.removeEventListener('pointerdown', gesture); };
+  window.addEventListener('keydown', gesture, {once:true});
+  window.addEventListener('pointerdown', gesture, {once:true});
+
+  const state = {
+    score:0, lives:3, won:false, over:false,
+    paddle:{ w:96, h:10, x:(W-96)/2, y:H-40, speed:6 },
+    ball:{ x:W/2, y:H-60, r:4, vx:3, vy:-3, stuck:true, maxSpeed:6 },
+    bricks:[], keys:{ left:false, right:false }
+  };
+
+  // New scoring mapping (top→bottom):
+  // Red 50, Orange 30, Green 20, Yellow 10
+  const cols=14, rows=8;
+  const brick={ w: Math.floor((W-2*20)/cols), h:18, gap:2, ox:20, oy:70 };
+  const colors=["#ff3b30","#ff3b30","#ff8c00","#ff8c00","#2ecc71","#2ecc71","#ffd400","#ffd400"];
+  const scores=[50,50,30,30,20,20,10,10];
+
+  function makeBricks(){
+    state.bricks=[];
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        state.bricks.push({
+          x: brick.ox + c*(brick.w+brick.gap),
+          y: brick.oy + r*(brick.h+brick.gap),
+          w: brick.w, h: brick.h, hit:false, color:colors[r], value:scores[r]
+        });
+      }
+    }
+  }
+
+  function resetBall(serveRight=false){
+    const p=state.paddle, b=state.ball;
+    b.x = p.x + p.w/2; b.y = p.y - 10;
+    b.vx = serveRight ? 3 : -3; b.vy = -3; b.stuck = true;
+  }
+
+  function resetGame(){
+    state.score=0; state.lives=3; state.won=false; state.over=false;
+    makeBricks(); resetBall(); updateHUD(); hideWin(); hideOver();
+  }
+
+  function showWin(){ winScore.textContent = `SCORE ${String(state.score).padStart(4,'0')}`; winOverlay.classList.add('show'); }
+  function hideWin(){ winOverlay.classList.remove('show'); }
+  function showOver(){ overScore.textContent = `SCORE ${String(state.score).padStart(4,'0')}`; overOverlay.classList.add('show'); }
+  function hideOver(){ overOverlay.classList.remove('show'); }
+
+  function updateHUD(){
+    scoreLbl.textContent = `SCORE ${String(state.score).padStart(4,'0')}`;
+    livesLbl.textContent = `BALLS ${state.lives}`;
+  }
+
+  // Input
+  addEventListener('keydown',e=>{
+    if (e.code==='ArrowLeft' || e.key==='a' || e.key==='A') state.keys.left=true;
+    if (e.code==='ArrowRight'|| e.key==='d' || e.key==='D') state.keys.right=true;
+    if (e.code==='Space'){
+      if (state.won || state.over){
+        resetGame(); // start fresh from overlays
+      } else if (state.ball.stuck) {
+        state.ball.stuck=false;
+      }
+      e.preventDefault();
+    }
+    if (e.key==='r' || e.key==='R') resetGame();
+  });
+  addEventListener('keyup',e=>{
+    if (e.code==='ArrowLeft' || e.key==='a' || e.key==='A') state.keys.left=false;
+    if (e.code==='ArrowRight'|| e.key==='d' || e.key==='D') state.keys.right=false;
+  });
+
+  // Helpers
+  function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+  function aabbIntersect(ax,ay,aw,ah,bx,by,bw,bh){
+    return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+  }
+
+  // Per-axis brick collision
+  function collideBricksAxis(axis){
+    const b=state.ball;
+    const half=b.r;
+    const bx = Math.round(b.x - half), by = Math.round(b.y - half), bs = half*2;
+    for (const br of state.bricks){
+      if (br.hit) continue;
+      if (aabbIntersect(bx, by, bs, bs, br.x, br.y, br.w, br.h)){
+        br.hit = true;
+        state.score += br.value;
+        updateHUD();
+        sounds.brick();
+        if (axis==='x'){
+          if (b.vx > 0) b.x = br.x - half; else b.x = br.x + br.w + half;
+          b.vx *= -1;
+        } else {
+          if (b.vy > 0) b.y = br.y - half; else b.y = br.y + br.h + half;
+          b.vy *= -1;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function step(){
+    const p=state.paddle, b=state.ball;
+    if (state.won || state.over) return; // freeze gameplay when finished
+
+    // Paddle
+    if (state.keys.left ^ state.keys.right){
+      p.x += state.keys.left ? -p.speed : p.speed;
+    }
+    p.x = clamp(p.x, PLAY_L+1, PLAY_R-1 - p.w);
+
+    // Ball lock to paddle when stuck
+    if (b.stuck){ b.x = p.x + p.w/2; b.y = p.y - 10; }
+
+    // Cap speed
+    const sp = Math.hypot(b.vx,b.vy);
+    const max = b.maxSpeed;
+    if (sp > max){
+      const s = max / sp; b.vx *= s; b.vy *= s;
+    }
+
+    // Move X
+    b.x += b.stuck ? 0 : b.vx;
+    // Walls X
+    if (b.x - b.r < PLAY_L){ b.x = PLAY_L + b.r; b.vx *= -1; sounds.wall(); }
+    if (b.x + b.r > PLAY_R){ b.x = PLAY_R - b.r; b.vx *= -1; sounds.wall(); }
+    // Bricks X
+    collideBricksAxis('x');
+
+    // Move Y
+    b.y += b.stuck ? 0 : b.vy;
+    // Walls Y (top)
+    if (b.y - b.r < PLAY_T){ b.y = PLAY_T + b.r; b.vy *= -1; sounds.wall(); }
+
+    // Paddle collision only when moving down
+    if (b.vy > 0){
+      if (aabbIntersect(b.x-b.r, b.y-b.r, b.r*2, b.r*2, p.x, p.y, p.w, p.h)){
+        b.y = p.y - b.r;
+        b.vy = -Math.abs(b.vy);
+        const rel = (b.x - (p.x + p.w/2)) / (p.w/2); // -1..1
+        b.vx = rel * 5;
+        // speed-up but keep under cap
+        const speed = Math.hypot(b.vx,b.vy);
+        const target = Math.min(speed*1.03, b.maxSpeed);
+        const k = target / speed;
+        b.vx *= k; b.vy *= k;
+        sounds.paddle(rel);
+      }
+    }
+    // Bricks Y
+    collideBricksAxis('y');
+
+    // Missed ball (bottom)
+    if (b.y - b.r > PLAY_B){
+      state.lives -= 1; updateHUD(); sounds.life();
+      if (state.lives <= 0){
+        state.over = true;
+        b.stuck = true;
+        sounds.over();
+        overScore.textContent = `SCORE ${String(state.score).padStart(4,'0')}`;
+        overOverlay.classList.add('show');
+        return;
+      }
+      resetBall(Math.random()>0.5);
+    }
+
+    // Wall cleared -> Win screen (do not auto-start another wall)
+    if (state.bricks.every(br=>br.hit)){
+      state.won = true;
+      b.stuck = true;
+      sounds.level();
+      showWin();
+    }
+  }
+
+  function render(){
+    ctx.fillStyle="#000"; ctx.fillRect(0,0,W,H);
+    // inner border
+    ctx.strokeStyle="#444"; ctx.lineWidth=1; ctx.strokeRect(PLAY_L+0.5,PLAY_T+0.5, (PLAY_R-PLAY_L)-1, (PLAY_B-PLAY_T)-1);
+
+    // bricks
+    for (const br of state.bricks){
+      if (br.hit) continue;
+      ctx.fillStyle = br.color;
+      ctx.fillRect(br.x, br.y, br.w, br.h);
+    }
+
+    // paddle
+    const p=state.paddle, b=state.ball;
+    ctx.fillStyle="#fff"; ctx.fillRect(p.x, p.y, p.w, p.h);
+    // ball (square)
+    ctx.fillRect(Math.round(b.x-b.r), Math.round(b.y-b.r), b.r*2, b.r*2);
+
+    // outer bezel
+    ctx.strokeStyle="#666"; ctx.lineWidth=2; ctx.strokeRect(1,1,W-2,H-2);
+  }
+
+  let last=performance.now();
+  function loop(ts){
+    if (ts - last > 1000/240){ step(); last = ts; }
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // Init
+  makeBricks(); updateHUD(); render(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
