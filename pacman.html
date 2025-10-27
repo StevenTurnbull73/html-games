@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac-Man Clone - Retro Game Museum</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #000;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+        }
+        
+        #gameContainer {
+            text-align: center;
+        }
+        
+        #score {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #ffff00;
+        }
+        
+        #lives {
+            font-size: 20px;
+            margin-bottom: 10px;
+            color: #ff0000;
+        }
+        
+        canvas {
+            border: 3px solid #2121de;
+            background: #000;
+            display: block;
+            margin: 0 auto;
+            cursor: pointer;
+        }
+        
+        canvas:focus {
+            outline: 2px solid #ffff00;
+        }
+        
+        #gameOver, #victory {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            color: #ff0000;
+            text-shadow: 3px 3px #000;
+            display: none;
+            z-index: 10;
+        }
+        
+        #victory {
+            color: #00ff00;
+        }
+        
+        #instructions {
+            margin-top: 20px;
+            font-size: 16px;
+            color: #888;
+        }
+        
+        .restart {
+            margin-top: 10px;
+            font-size: 18px;
+            color: #ffff00;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="score">SCORE: 0</div>
+        <div id="lives">LIVES: 3</div>
+        <canvas id="gameCanvas" width="560" height="620" tabindex="0"></canvas>
+        <div id="gameOver">
+            GAME OVER!
+            <div class="restart">Press SPACE to restart</div>
+        </div>
+        <div id="victory">
+            YOU WIN!
+            <div class="restart">Press SPACE to play again</div>
+        </div>
+        <div id="instructions">
+            <span style="color: #ffff00; font-size: 20px;">Press SPACE BAR to start!</span><br>
+            Use ARROW KEYS to move<br>
+            Eat all pellets to win!<br>
+            Power pellets let you eat ghosts!
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const livesElement = document.getElementById('lives');
+        const gameOverElement = document.getElementById('gameOver');
+        const victoryElement = document.getElementById('victory');
+        
+        const TILE_SIZE = 20;
+        const GRID_WIDTH = 28;
+        const GRID_HEIGHT = 31;
+        
+        // Game state
+        let score = 0;
+        let lives = 3;
+        let gameRunning = false; // Start with game not running
+        let gameStarted = false; // Track if game has been started with spacebar
+        let powerMode = false;
+        let powerModeTimer = 0;
+        const POWER_MODE_DURATION = 900; // frames - 15 seconds at 60fps
+        const POWER_MODE_FLASH_START = 240; // Start flashing in last 4 seconds (240 frames)
+        let fruitTimer = 0;
+        let fruitActive = false;
+        let fruitX = 14;
+        let fruitY = 17;
+        const FRUIT_SPAWN_TIME = 600; // frames until fruit appears
+        let deathAnimation = false;
+        let deathAnimationFrame = 0;
+        const DEATH_ANIMATION_FRAMES = 60;
+        let introPlaying = false; // Track if intro is currently playing
+        let ghostScorePopups = []; // Array to track score popups when eating ghosts
+        let ghostEatenCount = 0; // Track how many ghosts eaten in power mode
+        
+        // Audio context for sound effects
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let introPlayed = false;
+        let munchToggle = false; // For alternating munch sound
+        let powerSirenOscillator = null;
+        let powerSirenGain = null;
+        
+        // Play intro and start game on spacebar press
+        function startGame() {
+            console.log('startGame called, gameStarted:', gameStarted);
+            if (!gameStarted) {
+                gameStarted = true;
+                introPlaying = true;
+                console.log('Space pressed - playing intro, game will start after');
+                
+                // Resume audio context
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+                
+                // Calculate intro duration (sum of all note durations)
+                const introDuration = 2.8; // Total duration in seconds based on note timings
+                
+                setTimeout(() => {
+                    console.log('Playing intro now');
+                    playIntro();
+                    
+                    // Start game after intro finishes
+                    setTimeout(() => {
+                        introPlaying = false;
+                        gameRunning = true;
+                        console.log('Intro finished, game starting. gameRunning:', gameRunning);
+                    }, introDuration * 1000);
+                }, 100);
+            }
+        }
+        
+        // Power mode siren - continuous alternating tone
+        function startPowerSiren() {
+            if (powerSirenOscillator) return; // Already playing
+            
+            powerSirenOscillator = audioContext.createOscillator();
+            powerSirenGain = audioContext.createGain();
+            
+            powerSirenOscillator.connect(powerSirenGain);
+            powerSirenGain.connect(audioContext.destination);
+            
+            powerSirenOscillator.type = 'sine';
+            powerSirenGain.gain.setValueAtTime(0.15, audioContext.currentTime);
+            
+            // Oscillate between two frequencies for siren effect
+            const freq1 = 400;
+            const freq2 = 500;
+            const switchTime = 0.2; // Switch every 0.2 seconds
+            
+            // Create a much longer repeating pattern to ensure it doesn't go monotone
+            let time = audioContext.currentTime;
+            for (let i = 0; i < 200; i++) { // Extended to 200 iterations (40 seconds)
+                powerSirenOscillator.frequency.setValueAtTime(i % 2 === 0 ? freq1 : freq2, time + i * switchTime);
+            }
+            
+            powerSirenOscillator.start(audioContext.currentTime);
+        }
+        
+        function stopPowerSiren() {
+            if (powerSirenOscillator) {
+                powerSirenGain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                powerSirenOscillator.stop(audioContext.currentTime + 0.1);
+                powerSirenOscillator = null;
+                powerSirenGain = null;
+            }
+        }
+        
+        // Sound generation functions
+        function playSound(type) {
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            switch(type) {
+                case 'munch':
+                    // More authentic wakka sound - short, punchy with quick pitch change
+                    oscillator.type = 'square';
+                    oscillator.frequency.setValueAtTime(munchToggle ? 400 : 300, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(munchToggle ? 550 : 450, audioContext.currentTime + 0.03);
+                    
+                    gainNode.gain.setValueAtTime(0.18, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.05);
+                    
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.05);
+                    munchToggle = !munchToggle;
+                    break;
+                    
+                case 'powerup':
+                    // Start the continuous siren
+                    startPowerSiren();
+                    break;
+                    
+                case 'eatghost':
+                    oscillator.frequency.value = 800;
+                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(200, audioContext.currentTime + 0.3);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.3);
+                    break;
+                    
+                case 'death':
+                    // Longer death sound with descending tone
+                    const deathFreqs = [659, 622, 587, 554, 523, 494, 466, 440, 415, 392, 370, 349];
+                    deathFreqs.forEach((freq, i) => {
+                        const osc = audioContext.createOscillator();
+                        const gain = audioContext.createGain();
+                        osc.connect(gain);
+                        gain.connect(audioContext.destination);
+                        osc.frequency.value = freq;
+                        osc.type = 'square';
+                        gain.gain.setValueAtTime(0.15, audioContext.currentTime + i * 0.08);
+                        gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + i * 0.08 + 0.08);
+                        osc.start(audioContext.currentTime + i * 0.08);
+                        osc.stop(audioContext.currentTime + i * 0.08 + 0.08);
+                    });
+                    break;
+                    
+                case 'fruit':
+                    oscillator.frequency.value = 800;
+                    oscillator.type = 'sine';
+                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.2);
+                    break;
+            }
+        }
+        
+        function playIntro() {
+            if (introPlayed) return;
+            introPlayed = true;
+            
+            // Accurate Pac-Man intro theme - B4, B5, F#5, D#5 sequence
+            const notes = [
+                {freq: 493.88, duration: 0.1},   // B4
+                {freq: 987.77, duration: 0.1},   // B5
+                {freq: 739.99, duration: 0.1},   // F#5
+                {freq: 622.25, duration: 0.1},   // D#5
+                {freq: 987.77, duration: 0.15},  // B5
+                {freq: 739.99, duration: 0.1},   // F#5
+                {freq: 622.25, duration: 0.15},  // D#5
+                
+                {freq: 523.25, duration: 0.1},   // C5
+                {freq: 1046.50, duration: 0.1},  // C6
+                {freq: 783.99, duration: 0.1},   // G5
+                {freq: 659.25, duration: 0.1},   // E5
+                {freq: 1046.50, duration: 0.15}, // C6
+                {freq: 783.99, duration: 0.1},   // G5
+                {freq: 659.25, duration: 0.15},  // E5
+                
+                {freq: 493.88, duration: 0.1},   // B4
+                {freq: 987.77, duration: 0.1},   // B5
+                {freq: 739.99, duration: 0.1},   // F#5
+                {freq: 622.25, duration: 0.1},   // D#5
+                {freq: 987.77, duration: 0.15},  // B5
+                {freq: 739.99, duration: 0.1},   // F#5
+                {freq: 622.25, duration: 0.15},  // D#5
+                
+                {freq: 622.25, duration: 0.1},   // D#5
+                {freq: 659.25, duration: 0.1},   // E5
+                {freq: 698.46, duration: 0.1},   // F5
+                {freq: 739.99, duration: 0.1},   // F#5
+                {freq: 783.99, duration: 0.1},   // G5
+                {freq: 830.61, duration: 0.1},   // G#5
+                {freq: 880.00, duration: 0.1},   // A5
+                {freq: 987.77, duration: 0.3}    // B5 (long)
+            ];
+            
+            let time = audioContext.currentTime + 0.1;
+            notes.forEach(note => {
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = note.freq;
+                oscillator.type = 'square';
+                gainNode.gain.setValueAtTime(0.15, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + note.duration);
+                
+                oscillator.start(time);
+                oscillator.stop(time + note.duration);
+                
+                time += note.duration * 0.95; // Slight overlap
+            });
+        }
+        
+        // Maze layout (1 = wall, 0 = path, 2 = pellet, 3 = power pellet)
+        const maze = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,2,2,2,2,2,2,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,2,2,2,2,1],
+            [1,2,1,1,1,1,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,2,1,1,1,1,2,1],
+            [1,3,1,1,1,1,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,2,1,1,1,1,3,1],
+            [1,2,1,1,1,1,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,2,1,1,1,1,2,1],
+            [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+            [1,2,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,2,1],
+            [1,2,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,2,1],
+            [1,2,2,2,2,2,2,1,1,2,2,2,2,1,1,2,2,2,2,1,1,2,2,2,2,2,2,1],
+            [1,1,1,1,1,1,2,1,1,1,1,1,0,1,1,0,1,1,1,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,1,1,1,0,1,1,0,1,1,1,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,0,0,0,0,0,0,0,0,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,1,1,1,0,0,1,1,1,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,1,0,0,0,0,0,0,1,0,1,1,2,1,1,1,1,1,1],
+            [2,2,2,2,2,2,2,0,0,0,1,0,0,0,0,0,0,1,0,0,0,2,2,2,2,2,2,2],
+            [1,1,1,1,1,1,2,1,1,0,1,0,0,0,0,0,0,1,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,1,1,1,1,1,1,1,1,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,0,0,0,0,0,0,0,0,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,1,1,1,1,1,1,1,1,0,1,1,2,1,1,1,1,1,1],
+            [1,1,1,1,1,1,2,1,1,0,1,1,1,1,1,1,1,1,0,1,1,2,1,1,1,1,1,1],
+            [1,2,2,2,2,2,2,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,2,2,2,2,1],
+            [1,2,1,1,1,1,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,2,1,1,1,1,2,1],
+            [1,2,1,1,1,1,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,2,1,1,1,1,2,1],
+            [1,3,2,2,1,1,2,2,2,2,2,2,2,0,0,2,2,2,2,2,2,2,1,1,2,2,3,1],
+            [1,1,1,2,1,1,2,1,1,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,2,1,1,1],
+            [1,1,1,2,1,1,2,1,1,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,2,1,1,1],
+            [1,2,2,2,2,2,2,1,1,2,2,2,2,1,1,2,2,2,2,1,1,2,2,2,2,2,2,1],
+            [1,2,1,1,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,1,1,2,1],
+            [1,2,1,1,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,1,1,2,1],
+            [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+        
+        // Count total pellets
+        let totalPellets = 0;
+        let pelletsEaten = 0;
+        for (let row of maze) {
+            for (let cell of row) {
+                if (cell === 2 || cell === 3) totalPellets++;
+            }
+        }
+        
+        // Pac-Man
+        const pacman = {
+            x: 14,
+            y: 23,
+            direction: 0, // 0: none, 1: up, 2: right, 3: down, 4: left
+            nextDirection: 0,
+            speed: 0.15,
+            mouthOpen: 0,
+            mouthDirection: 1
+        };
+        
+        // Ghosts with different AI personalities
+        const ghosts = [
+            { x: 13.5, y: 14, color: '#ff0000', startX: 13.5, startY: 14, direction: 2, mode: 'chase', personality: 'aggressive', updateCounter: 0, eaten: false }, // Blinky (red) - starts in house, chases directly
+            { x: 14, y: 14, color: '#ffb8ff', startX: 14, startY: 14, direction: 1, mode: 'chase', personality: 'ambush', updateCounter: 0, eaten: false }, // Pinky (pink) - tries to get ahead
+            { x: 12, y: 14, color: '#00ffff', startX: 12, startY: 14, direction: 4, mode: 'chase', personality: 'random', updateCounter: 0, eaten: false }, // Inky (cyan) - unpredictable
+            { x: 15, y: 14, color: '#ffb851', startX: 15, startY: 14, direction: 3, mode: 'chase', personality: 'shy', updateCounter: 0, eaten: false }  // Clyde (orange) - backs off when close
+        ];
+        
+        // Input handling - simpler approach
+        document.addEventListener('keydown', (e) => {
+            console.log('Key pressed:', e.key);
+            
+            // Prevent default scrolling for arrow keys and space
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {
+                e.preventDefault();
+            } else {
+                // Ignore other keys silently
+                return;
+            }
+            
+            // Space bar starts the game or restarts after game over
+            if (e.key === ' ') {
+                console.log('Space bar detected, gameStarted:', gameStarted, 'introPlaying:', introPlaying, 'gameRunning:', gameRunning);
+                if (!gameStarted && !introPlaying) {
+                    startGame();
+                } else if (!gameRunning && gameStarted) {
+                    // Restart after game over
+                    resetGame();
+                    startGame();
+                }
+                return;
+            }
+            
+            // Only accept arrow keys if game has started
+            if (!gameStarted) {
+                console.log('Game not started yet, ignoring arrow key');
+                return;
+            }
+            
+            // Set next direction based on arrow keys - direct assignment
+            if (e.key === 'ArrowUp') {
+                pacman.nextDirection = 1;
+            } else if (e.key === 'ArrowRight') {
+                pacman.nextDirection = 2;
+            } else if (e.key === 'ArrowDown') {
+                pacman.nextDirection = 3;
+            } else if (e.key === 'ArrowLeft') {
+                pacman.nextDirection = 4;
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            // Nothing needed here for now
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        function canMove(x, y, isPacman = false) {
+            // Check multiple points around the entity's position for collision
+            const radius = 0.4;
+            const points = [
+                {x: x, y: y},
+                {x: x + radius, y: y},
+                {x: x - radius, y: y},
+                {x: x, y: y + radius},
+                {x: x, y: y - radius}
+            ];
+            
+            for (let point of points) {
+                const gridX = Math.floor(point.x + 0.5);
+                const gridY = Math.floor(point.y + 0.5);
+                
+                // Allow tunnel wraparound on row 14
+                if (gridY === 14 && (gridX < 0 || gridX >= GRID_WIDTH)) {
+                    continue; // Skip bounds check for tunnel
+                }
+                
+                if (gridX < 0 || gridX >= GRID_WIDTH || gridY < 0 || gridY >= GRID_HEIGHT) {
+                    return false;
+                }
+                
+                if (maze[gridY][gridX] === 1) {
+                    return false;
+                }
+                
+                // ONLY Pac-Man cannot enter ghost house, ghosts can move freely
+                if (isPacman) {
+                    if (gridX >= 11 && gridX <= 16 && gridY >= 12 && gridY <= 16) {
+                        return false;
+                    }
+                }
+            }
+            
+            return true;
+        }
+        
+        function movePacman() {
+            const gridX = Math.round(pacman.x);
+            const gridY = Math.round(pacman.y);
+            const centerThreshold = 0.2; // More forgiving threshold
+            
+            // Check if we're close to grid center
+            const atCenterX = Math.abs(pacman.x - gridX) < centerThreshold;
+            const atCenterY = Math.abs(pacman.y - gridY) < centerThreshold;
+            
+            // Try to change direction if requested and we have a next direction
+            if (pacman.nextDirection !== 0) {
+                let canTurn = false;
+                let testX = pacman.x;
+                let testY = pacman.y;
+                
+                // Check if we can turn based on current direction
+                if (pacman.nextDirection === 1 || pacman.nextDirection === 3) {
+                    // Want to go up or down
+                    if (atCenterX) {
+                        pacman.x = gridX; // Snap to grid
+                        testY = (pacman.nextDirection === 1) ? gridY - 1 : gridY + 1;
+                        if (canMove(gridX, testY, true)) {
+                            pacman.direction = pacman.nextDirection;
+                            canTurn = true;
+                        }
+                    }
+                } else if (pacman.nextDirection === 2 || pacman.nextDirection === 4) {
+                    // Want to go left or right
+                    if (atCenterY) {
+                        pacman.y = gridY; // Snap to grid
+                        testX = (pacman.nextDirection === 2) ? gridX + 1 : gridX - 1;
+                        if (canMove(testX, gridY, true)) {
+                            pacman.direction = pacman.nextDirection;
+                            canTurn = true;
+                        }
+                    }
+                }
+                
+                // If we successfully turned, clear the next direction
+                if (canTurn) {
+                    pacman.nextDirection = 0;
+                }
+            }
+            
+            // Auto-align to center of corridor to prevent getting stuck
+            if (pacman.direction === 1 || pacman.direction === 3) {
+                // Moving vertically - align horizontally
+                if (atCenterX) {
+                    pacman.x = gridX;
+                }
+            } else if (pacman.direction === 2 || pacman.direction === 4) {
+                // Moving horizontally - align vertically
+                if (atCenterY) {
+                    pacman.y = gridY;
+                }
+            }
+            
+            // Move in current direction
+            let newX = pacman.x;
+            let newY = pacman.y;
+            
+            if (pacman.direction === 1) newY -= pacman.speed;
+            else if (pacman.direction === 2) newX += pacman.speed;
+            else if (pacman.direction === 3) newY += pacman.speed;
+            else if (pacman.direction === 4) newX -= pacman.speed;
+            
+            // Check if new position is valid
+            if (canMove(newX, newY, true)) {
+                pacman.x = newX;
+                pacman.y = newY;
+            } else {
+                // Hit a wall - stop at grid center
+                if (pacman.direction === 1 || pacman.direction === 3) {
+                    pacman.y = gridY;
+                } else if (pacman.direction === 2 || pacman.direction === 4) {
+                    pacman.x = gridX;
+                }
+                pacman.direction = 0; // Stop moving
+            }
+            
+            // Wrap around tunnel
+            if (pacman.x < 0) pacman.x = GRID_WIDTH - 1;
+            if (pacman.x >= GRID_WIDTH) pacman.x = 0;
+            
+            // Check for pellet collection
+            const checkGridX = Math.round(pacman.x);
+            const checkGridY = Math.round(pacman.y);
+            
+            if (maze[checkGridY][checkGridX] === 2) {
+                maze[checkGridY][checkGridX] = 0;
+                score += 10;
+                pelletsEaten++;
+                updateScore();
+                playSound('munch');
+            } else if (maze[checkGridY][checkGridX] === 3) {
+                maze[checkGridY][checkGridX] = 0;
+                score += 50;
+                pelletsEaten++;
+                powerMode = true;
+                powerModeTimer = POWER_MODE_DURATION;
+                ghostEatenCount = 0; // Reset counter for new power mode
+                console.log('Power mode activated! Duration:', POWER_MODE_DURATION, 'frames (should be ~15 seconds)');
+                updateScore();
+                playSound('powerup');
+            } else if (maze[checkGridY][checkGridX] === 4) {
+                maze[checkGridY][checkGridX] = 0;
+                score += 100;
+                updateScore();
+                playSound('fruit');
+                
+                // Add score popup for fruit
+                ghostScorePopups.push({
+                    x: checkGridX,
+                    y: checkGridY,
+                    score: 100,
+                    timer: 60 // Show for 1 second
+                });
+            }
+            
+            // Animate mouth
+            pacman.mouthOpen += pacman.mouthDirection * 0.1;
+            if (pacman.mouthOpen > 0.8) pacman.mouthDirection = -1;
+            if (pacman.mouthOpen < 0) pacman.mouthDirection = 1;
+        }
+        
+        function moveGhost(ghost, index) {
+            // Don't move ghosts that are eaten
+            if (ghost.eaten) return;
+            
+            // Each ghost updates at slightly different rates for independence
+            ghost.updateCounter++;
+            const updateFrequency = 1 + (index * 0.5); // Ghosts update at different intervals
+            
+            if (ghost.updateCounter < updateFrequency) {
+                // Still move smoothly even when not updating direction
+                const speed = powerMode ? 0.05 : 0.08;
+                
+                // If direction is 0, try to pick a direction
+                if (ghost.direction === 0) {
+                    const testDirs = [1, 2, 3, 4];
+                    for (let dir of testDirs) {
+                        let testX = ghost.x, testY = ghost.y;
+                        if (dir === 1) testY -= 1;
+                        if (dir === 2) testX += 1;
+                        if (dir === 3) testY += 1;
+                        if (dir === 4) testX -= 1;
+                        if (canMove(testX, testY)) {
+                            ghost.direction = dir;
+                            console.log(`Ghost ${index} (${ghost.color}) was stuck, set direction to ${dir}`);
+                            break;
+                        }
+                    }
+                }
+                
+                // Calculate next position
+                let nextX = ghost.x;
+                let nextY = ghost.y;
+                if (ghost.direction === 1) nextY -= speed;
+                if (ghost.direction === 2) nextX += speed;
+                if (ghost.direction === 3) nextY += speed;
+                if (ghost.direction === 4) nextX -= speed;
+                
+                // Only move if not going through a wall
+                if (canMove(nextX, nextY)) {
+                    ghost.x = nextX;
+                    ghost.y = nextY;
+                } else {
+                    // Hit a wall, force direction update next cycle
+                    ghost.updateCounter = updateFrequency;
+                }
+                
+                // Wrap around tunnel
+                if (ghost.x < 0) ghost.x = GRID_WIDTH - 1;
+                if (ghost.x >= GRID_WIDTH) ghost.x = 0;
+                return;
+            }
+            
+            ghost.updateCounter = 0;
+            
+            const gridX = Math.round(ghost.x);
+            const gridY = Math.round(ghost.y);
+            
+            // Check if ghost is at intersection
+            const atIntersection = Math.abs(ghost.x - gridX) < 0.05 && Math.abs(ghost.y - gridY) < 0.05;
+            
+            if (atIntersection) {
+                ghost.x = gridX;
+                ghost.y = gridY;
+                
+                const possibleDirections = [];
+                
+                // Check all directions (excluding reverse to prevent oscillation)
+                if (canMove(gridX, gridY - 1) && ghost.direction !== 3) possibleDirections.push(1); // up
+                if (canMove(gridX + 1, gridY) && ghost.direction !== 4) possibleDirections.push(2); // right
+                if (canMove(gridX, gridY + 1) && ghost.direction !== 1) possibleDirections.push(3); // down
+                if (canMove(gridX - 1, gridY) && ghost.direction !== 2) possibleDirections.push(4); // left
+                
+                // If no directions available (shouldn't happen but safety check)
+                if (possibleDirections.length === 0) {
+                    console.log(`Ghost ${index} (${ghost.color}) has no valid directions, checking all including reverse`);
+                    // Check all directions including reverse
+                    if (canMove(gridX, gridY - 1)) possibleDirections.push(1);
+                    if (canMove(gridX + 1, gridY)) possibleDirections.push(2);
+                    if (canMove(gridX, gridY + 1)) possibleDirections.push(3);
+                    if (canMove(gridX - 1, gridY)) possibleDirections.push(4);
+                }
+                
+                if (possibleDirections.length > 0) {
+                    let targetX = pacman.x;
+                    let targetY = pacman.y;
+                    
+                    if (powerMode) {
+                        // All ghosts run away when in power mode
+                        const distances = possibleDirections.map(dir => {
+                            let tx = gridX, ty = gridY;
+                            if (dir === 1) ty--;
+                            if (dir === 2) tx++;
+                            if (dir === 3) ty++;
+                            if (dir === 4) tx--;
+                            return Math.abs(tx - pacman.x) + Math.abs(ty - pacman.y);
+                        });
+                        const maxDist = Math.max(...distances);
+                        ghost.direction = possibleDirections[distances.indexOf(maxDist)];
+                    } else {
+                        // Different AI personalities
+                        switch(ghost.personality) {
+                            case 'aggressive': // Red ghost - direct chase
+                                break;
+                                
+                            case 'ambush': // Pink ghost - target ahead of Pac-Man
+                                if (pacman.direction === 1) targetY -= 4;
+                                if (pacman.direction === 2) targetX += 4;
+                                if (pacman.direction === 3) targetY += 4;
+                                if (pacman.direction === 4) targetX -= 4;
+                                break;
+                                
+                            case 'random': // Cyan ghost - mix of random and chase
+                                if (Math.random() > 0.3) {
+                                    // 70% chase
+                                    targetX = pacman.x;
+                                    targetY = pacman.y;
+                                } else {
+                                    // 30% random
+                                    ghost.direction = possibleDirections[Math.floor(Math.random() * possibleDirections.length)];
+                                    return;
+                                }
+                                break;
+                                
+                            case 'shy': // Orange ghost - chase when far, flee when close
+                                const dist = Math.abs(gridX - pacman.x) + Math.abs(gridY - pacman.y);
+                                if (dist < 8) {
+                                    // Too close, go to corner
+                                    targetX = 0;
+                                    targetY = GRID_HEIGHT - 1;
+                                }
+                                break;
+                        }
+                        
+                        // Calculate best direction toward target
+                        const distances = possibleDirections.map(dir => {
+                            let tx = gridX, ty = gridY;
+                            if (dir === 1) ty--;
+                            if (dir === 2) tx++;
+                            if (dir === 3) ty++;
+                            if (dir === 4) tx--;
+                            return Math.abs(tx - targetX) + Math.abs(ty - targetY);
+                        });
+                        const minDist = Math.min(...distances);
+                        ghost.direction = possibleDirections[distances.indexOf(minDist)];
+                    }
+                } else {
+                    // This should never happen now, but as absolute fallback
+                    console.log(`Ghost ${index} (${ghost.color}) still has no direction, picking random`);
+                    ghost.direction = Math.floor(Math.random() * 4) + 1;
+                }
+            }
+            
+            // Move ghost
+            const speed = powerMode ? 0.05 : 0.08;
+            
+            let nextX = ghost.x;
+            let nextY = ghost.y;
+            if (ghost.direction === 1) nextY -= speed;
+            if (ghost.direction === 2) nextX += speed;
+            if (ghost.direction === 3) nextY += speed;
+            if (ghost.direction === 4) nextX -= speed;
+            
+            // Only move if the next position is valid (not a wall)
+            if (canMove(nextX, nextY)) {
+                ghost.x = nextX;
+                ghost.y = nextY;
+            }
+            
+            // Wrap around tunnel
+            if (ghost.x < 0) ghost.x = GRID_WIDTH - 1;
+            if (ghost.x >= GRID_WIDTH) ghost.x = 0;
+        }
+        
+        function checkCollisions() {
+            if (deathAnimation) return; // Don't check collisions during death animation
+            
+            for (let ghost of ghosts) {
+                if (ghost.eaten) continue; // Skip eaten ghosts
+                
+                const dist = Math.sqrt(Math.pow(pacman.x - ghost.x, 2) + Math.pow(pacman.y - ghost.y, 2));
+                
+                if (dist < 0.5) {
+                    if (powerMode) {
+                        // Eat ghost with increasing score
+                        ghostEatenCount++;
+                        const points = 200 * Math.pow(2, ghostEatenCount - 1); // 200, 400, 800, 1600
+                        score += points;
+                        updateScore();
+                        
+                        // Add score popup
+                        ghostScorePopups.push({
+                            x: ghost.x,
+                            y: ghost.y,
+                            score: points,
+                            timer: 60 // Show for 1 second
+                        });
+                        
+                        ghost.eaten = true;
+                        ghost.x = ghost.startX;
+                        ghost.y = ghost.startY;
+                        playSound('eatghost');
+                        
+                        // Reset eaten status after a delay
+                        setTimeout(() => {
+                            ghost.eaten = false;
+                        }, 3000);
+                    } else {
+                        // Start death animation
+                        lives--;
+                        updateLives();
+                        deathAnimation = true;
+                        deathAnimationFrame = 0;
+                        playSound('death');
+                    }
+                }
+            }
+        }
+        
+        function resetPositions() {
+            pacman.x = 14;
+            pacman.y = 23;
+            pacman.direction = 0;
+            pacman.nextDirection = 0;
+            
+            for (let ghost of ghosts) {
+                ghost.x = ghost.startX;
+                ghost.y = ghost.startY;
+                ghost.eaten = false;
+            }
+            
+            powerMode = false;
+            powerModeTimer = 0;
+            ghostEatenCount = 0;
+            ghostScorePopups = [];
+            stopPowerSiren();
+        }
+        
+        function gameOver() {
+            gameRunning = false;
+            gameOverElement.style.display = 'block';
+        }
+        
+        function victory() {
+            gameRunning = false;
+            victoryElement.style.display = 'block';
+        }
+        
+        function resetGame() {
+            score = 0;
+            lives = 3;
+            pelletsEaten = 0;
+            gameRunning = false;
+            gameStarted = false;
+            powerMode = false;
+            powerModeTimer = 0;
+            fruitTimer = 0;
+            fruitActive = false;
+            introPlayed = false;
+            introPlaying = false;
+            deathAnimation = false;
+            deathAnimationFrame = 0;
+            stopPowerSiren();
+            gameOverElement.style.display = 'none';
+            victoryElement.style.display = 'none';
+            
+            // Reset maze pellets
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    if (maze[y][x] === 0) {
+                        // Don't restore pellets in ghost house area (center area)
+                        if (y >= 11 && y <= 19 && x >= 10 && x <= 17) {
+                            continue; // Skip ghost house
+                        }
+                        // Restore pellets in paths
+                        maze[y][x] = 2;
+                    }
+                }
+            }
+            
+            // Restore power pellets in corners
+            maze[3][1] = 3;
+            maze[3][26] = 3;
+            maze[23][1] = 3;
+            maze[23][26] = 3;
+            
+            // Clear ghost house area
+            for (let y = 11; y <= 19; y++) {
+                for (let x = 10; x <= 17; x++) {
+                    if (maze[y][x] === 2 || maze[y][x] === 3) {
+                        maze[y][x] = 0;
+                    }
+                }
+            }
+            
+            resetPositions();
+            updateScore();
+            updateLives();
+        }
+        
+        function updateScore() {
+            scoreElement.textContent = 'SCORE: ' + score;
+        }
+        
+        function updateLives() {
+            livesElement.textContent = 'LIVES: ' + lives;
+        }
+        
+        function drawMaze() {
+            ctx.strokeStyle = '#2121de';
+            ctx.lineWidth = 2;
+            
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    const cell = maze[y][x];
+                    const px = x * TILE_SIZE;
+                    const py = y * TILE_SIZE;
+                    
+                    if (cell === 1) {
+                        // Draw wall
+                        ctx.fillStyle = '#2121de';
+                        ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                    } else if (cell === 2) {
+                        // Draw pellet
+                        ctx.fillStyle = '#ffb897';
+                        ctx.beginPath();
+                        ctx.arc(px + TILE_SIZE / 2, py + TILE_SIZE / 2, 2, 0, Math.PI * 2);
+                        ctx.fill();
+                    } else if (cell === 3) {
+                        // Draw power pellet
+                        ctx.fillStyle = '#ffb897';
+                        ctx.beginPath();
+                        ctx.arc(px + TILE_SIZE / 2, py + TILE_SIZE / 2, 5, 0, Math.PI * 2);
+                        ctx.fill();
+                    } else if (cell === 4) {
+                        // Draw fruit (cherry)
+                        const cx = px + TILE_SIZE / 2;
+                        const cy = py + TILE_SIZE / 2;
+                        
+                        // Cherry body
+                        ctx.fillStyle = '#ff0000';
+                        ctx.beginPath();
+                        ctx.arc(cx - 3, cy + 2, 5, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(cx + 3, cy + 2, 5, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Cherry stem
+                        ctx.strokeStyle = '#8B4513';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(cx - 3, cy - 3);
+                        ctx.lineTo(cx, cy - 6);
+                        ctx.moveTo(cx + 3, cy - 3);
+                        ctx.lineTo(cx, cy - 6);
+                        ctx.stroke();
+                        
+                        ctx.lineWidth = 2; // Reset line width
+                    }
+                }
+            }
+        }
+        
+        function drawPacman() {
+            const px = pacman.x * TILE_SIZE + TILE_SIZE / 2;
+            const py = pacman.y * TILE_SIZE + TILE_SIZE / 2;
+            const radius = TILE_SIZE / 2 - 2;
+            
+            if (deathAnimation) {
+                // Death animation: Pac-Man opens mouth wider and wider until disappearing
+                const progress = deathAnimationFrame / DEATH_ANIMATION_FRAMES;
+                
+                if (progress < 0.8) {
+                    ctx.fillStyle = '#ffff00';
+                    ctx.beginPath();
+                    
+                    // Mouth opens wider during death
+                    const mouthAngle = Math.PI / 4 + (progress * Math.PI * 0.7);
+                    
+                    ctx.arc(px, py, radius, mouthAngle, Math.PI * 2 - mouthAngle);
+                    ctx.lineTo(px, py);
+                    ctx.fill();
+                    
+                    // Draw eye that gets smaller
+                    const eyeSize = radius * 0.15 * (1 - progress * 1.2);
+                    if (eyeSize > 0) {
+                        ctx.fillStyle = '#000';
+                        ctx.beginPath();
+                        ctx.arc(px, py - radius * 0.3, eyeSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+                // Pac-Man disappears in last 20% of animation
+                
+                return;
+            }
+            
+            // Normal Pac-Man rendering
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            
+            // Determine mouth angle based on direction
+            let startAngle = 0;
+            if (pacman.direction === 1) startAngle = Math.PI * 1.5; // up
+            if (pacman.direction === 2) startAngle = 0; // right
+            if (pacman.direction === 3) startAngle = Math.PI * 0.5; // down
+            if (pacman.direction === 4) startAngle = Math.PI; // left
+            
+            const mouthAngle = Math.PI / 4 * pacman.mouthOpen;
+            
+            ctx.arc(px, py, radius, startAngle + mouthAngle, startAngle + Math.PI * 2 - mouthAngle);
+            ctx.lineTo(px, py);
+            ctx.fill();
+            
+            // Draw eye
+            if (pacman.direction !== 0) {
+                ctx.fillStyle = '#000';
+                let eyeX = px;
+                let eyeY = py - radius * 0.3;
+                
+                // Position eye based on direction
+                if (pacman.direction === 2) { // right
+                    eyeX = px + radius * 0.3;
+                    eyeY = py - radius * 0.3;
+                } else if (pacman.direction === 4) { // left
+                    eyeX = px - radius * 0.3;
+                    eyeY = py - radius * 0.3;
+                } else if (pacman.direction === 1) { // up
+                    eyeY = py - radius * 0.5;
+                } else if (pacman.direction === 3) { // down
+                    eyeY = py - radius * 0.1;
+                }
+                
+                ctx.beginPath();
+                ctx.arc(eyeX, eyeY, radius * 0.15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function drawGhosts() {
+            for (let ghost of ghosts) {
+                if (ghost.eaten) continue; // Don't draw eaten ghosts
+                
+                const px = ghost.x * TILE_SIZE + TILE_SIZE / 2;
+                const py = ghost.y * TILE_SIZE + TILE_SIZE / 2;
+                const radius = TILE_SIZE / 2 - 2;
+                
+                let ghostColor;
+                if (powerMode) {
+                    // Flash white when power mode is ending
+                    if (powerModeTimer < POWER_MODE_FLASH_START) {
+                        // Flash every 10 frames
+                        ghostColor = (Math.floor(powerModeTimer / 10) % 2 === 0) ? '#ffffff' : '#0000ff';
+                    } else {
+                        ghostColor = '#0000ff';
+                    }
+                } else {
+                    ghostColor = ghost.color;
+                }
+                
+                ctx.fillStyle = ghostColor;
+                
+                // Draw ghost body
+                ctx.beginPath();
+                ctx.arc(px, py - radius / 3, radius, Math.PI, 0, false);
+                ctx.lineTo(px + radius, py + radius);
+                ctx.lineTo(px + radius * 0.6, py + radius * 0.6);
+                ctx.lineTo(px + radius * 0.2, py + radius);
+                ctx.lineTo(px - radius * 0.2, py + radius);
+                ctx.lineTo(px - radius * 0.6, py + radius * 0.6);
+                ctx.lineTo(px - radius, py + radius);
+                ctx.closePath();
+                ctx.fill();
+                
+                // Draw eyes (only when not in power mode or not flashing white)
+                if (!powerMode || (powerModeTimer < POWER_MODE_FLASH_START && ghostColor !== '#ffffff')) {
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(px - radius * 0.4, py - radius * 0.3, radius * 0.3, radius * 0.4);
+                    ctx.fillRect(px + radius * 0.1, py - radius * 0.3, radius * 0.3, radius * 0.4);
+                    
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(px - radius * 0.3, py - radius * 0.2, radius * 0.2, radius * 0.2);
+                    ctx.fillRect(px + radius * 0.2, py - radius * 0.2, radius * 0.2, radius * 0.2);
+                }
+            }
+        }
+        
+        function drawScorePopups() {
+            ctx.font = 'bold 16px Arial';
+            ctx.fillStyle = '#00ffff';
+            ctx.textAlign = 'center';
+            
+            for (let popup of ghostScorePopups) {
+                const px = popup.x * TILE_SIZE + TILE_SIZE / 2;
+                const py = popup.y * TILE_SIZE + TILE_SIZE / 2;
+                ctx.fillText(popup.score.toString(), px, py);
+            }
+            
+            ctx.textAlign = 'left'; // Reset
+        }
+        
+        function update() {
+            if (!gameRunning) return;
+            
+            // Pause game while intro is playing (including ghosts)
+            if (introPlaying) {
+                return;
+            }
+            
+            // Handle death animation
+            if (deathAnimation) {
+                deathAnimationFrame++;
+                if (deathAnimationFrame >= DEATH_ANIMATION_FRAMES) {
+                    deathAnimation = false;
+                    deathAnimationFrame = 0;
+                    
+                    if (lives <= 0) {
+                        gameOver();
+                    } else {
+                        resetPositions();
+                    }
+                }
+                return; // Don't update game during death animation
+            }
+            
+            // Update power mode timer
+            if (powerMode) {
+                powerModeTimer--;
+                if (powerModeTimer <= 0) {
+                    powerMode = false;
+                    console.log('Power mode ended');
+                    stopPowerSiren();
+                }
+            }
+            
+            // Update score popups
+            for (let i = ghostScorePopups.length - 1; i >= 0; i--) {
+                ghostScorePopups[i].timer--;
+                if (ghostScorePopups[i].timer <= 0) {
+                    ghostScorePopups.splice(i, 1);
+                }
+            }
+            
+            // Update fruit timer
+            if (!fruitActive) {
+                fruitTimer++;
+                if (fruitTimer >= FRUIT_SPAWN_TIME) {
+                    fruitActive = true;
+                    maze[fruitY][fruitX] = 4; // Place fruit
+                    fruitTimer = 0;
+                }
+            } else {
+                fruitTimer++;
+                if (fruitTimer >= 300) { // Fruit disappears after 5 seconds
+                    fruitActive = false;
+                    if (maze[fruitY][fruitX] === 4) {
+                        maze[fruitY][fruitX] = 0;
+                    }
+                    fruitTimer = 0;
+                }
+            }
+            
+            movePacman();
+            
+            for (let i = 0; i < ghosts.length; i++) {
+                moveGhost(ghosts[i], i);
+            }
+            
+            checkCollisions();
+            
+            // Check for victory
+            if (pelletsEaten >= totalPellets) {
+                victory();
+            }
+        }
+        
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            drawMaze();
+            drawPacman();
+            
+            // Don't draw ghosts during death animation
+            if (!deathAnimation) {
+                drawGhosts();
+            }
+            
+            // Draw score popups on top
+            drawScorePopups();
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Start game
+        updateScore();
+        updateLives();
+        
+        console.log('Game initialized. Press SPACE BAR to start!');
+        console.log('Initial state - gameRunning:', gameRunning, 'gameStarted:', gameStarted);
+        gameLoop();
+    </script>
+</body>
+</html>
