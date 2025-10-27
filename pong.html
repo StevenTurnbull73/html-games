@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong - 1972</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #000;
+            font-family: 'Press Start 2P', 'Courier New', monospace;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        canvas {
+            border-top: 4px solid #fff;
+            border-bottom: 4px solid #fff;
+            background: #000;
+            display: block;
+        }
+        .score {
+            font-size: 1.2em;
+            margin-top: 20px;
+            text-align: center;
+            color: #fff;
+            letter-spacing: 2px;
+        }
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1em;
+            font-family: 'Press Start 2P', 'Courier New', monospace;
+            cursor: pointer;
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #ccc;
+        }
+    </style>
+</head>
+<body>
+    
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+    
+    <div class="score">
+        <span id="scoreDisplay">You: 0 | Computer: 0 | Press SPACE to start</span>
+    </div>
+    
+    <button id="resetBtn">New Game</button>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const resetBtn = document.getElementById('resetBtn');
+
+        let audioContext = null;
+        
+        function initAudio() {
+            if (!audioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) {
+                    console.log('Audio not supported');
+                }
+            }
+        }
+
+        function playBeep(frequency, duration) {
+            try {
+                if (!audioContext) return;
+                
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = frequency;
+                oscillator.type = 'square';
+                gainNode.gain.value = 0.15;
+                
+                const now = audioContext.currentTime;
+                oscillator.start(now);
+                oscillator.stop(now + duration);
+            } catch (e) {
+                console.log('Audio error:', e);
+            }
+        }
+
+        let game = {
+            ball: {
+                x: 400,
+                y: 250,
+                size: 12,
+                speedX: 0,
+                speedY: 0,
+                active: false
+            },
+            playerPaddle: {
+                x: 20,
+                y: 200,
+                width: 10,
+                height: 100,
+                speed: 8
+            },
+            cpuPaddle: {
+                x: 770,
+                y: 200,
+                width: 10,
+                height: 100,
+                speed: 2.5
+            },
+            playerScore: 0,
+            cpuScore: 0,
+            keys: {}
+        };
+
+        document.addEventListener('keydown', function(e) {
+            game.keys[e.key] = true;
+            initAudio();
+        });
+
+        document.addEventListener('keyup', function(e) {
+            game.keys[e.key] = false;
+        });
+
+        resetBtn.addEventListener('click', resetGame);
+
+        function resetGame() {
+            game.playerScore = 0;
+            game.cpuScore = 0;
+            resetBall();
+            updateScore();
+        }
+
+        function resetBall() {
+            game.ball.x = 400;
+            game.ball.y = 250;
+            game.ball.speedX = 0;
+            game.ball.speedY = 0;
+            game.ball.active = false;
+        }
+
+        function serveBall() {
+            if (!game.ball.active) {
+                game.ball.speedX = 5;
+                game.ball.speedY = (Math.random() - 0.5) * 6;
+                game.ball.active = true;
+                playBeep(600, 0.1);
+            }
+        }
+
+        function drawRect(x, y, w, h) {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x, y, w, h);
+        }
+
+        function drawSquare(x, y, size) {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        }
+
+        function drawCenterLine() {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(400, 0);
+            ctx.lineTo(400, 500);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function updateScore() {
+            let status = !game.ball.active ? ' | Press SPACE to start' : '';
+            scoreDisplay.textContent = 'You: ' + game.playerScore + ' | Computer: ' + game.cpuScore + status;
+            
+            if (game.playerScore >= 5) {
+                playBeep(800, 0.5);
+                setTimeout(function() {
+                    alert('You Win! 🎉 You beat the computer 5-' + game.cpuScore + '!');
+                    resetGame();
+                }, 100);
+            } else if (game.cpuScore >= 5) {
+                playBeep(200, 0.5);
+                setTimeout(function() {
+                    alert('Computer Wins! 💻 Better luck next time! ' + game.cpuScore + '-' + game.playerScore);
+                    resetGame();
+                }, 100);
+            }
+        }
+
+        function update() {
+            if (game.keys[' ']) {
+                serveBall();
+            }
+
+            if (game.keys['ArrowUp'] && game.playerPaddle.y > 0) {
+                game.playerPaddle.y -= game.playerPaddle.speed;
+            }
+            if (game.keys['ArrowDown'] && game.playerPaddle.y < 400) {
+                game.playerPaddle.y += game.playerPaddle.speed;
+            }
+
+            if (game.ball.active) {
+                const paddleCenter = game.cpuPaddle.y + 50;
+                const ballY = game.ball.y;
+                
+                if (game.ball.speedX > 0) {
+                    if (paddleCenter < ballY - 20) {
+                        game.cpuPaddle.y += game.cpuPaddle.speed;
+                    } else if (paddleCenter > ballY + 20) {
+                        game.cpuPaddle.y -= game.cpuPaddle.speed;
+                    }
+                }
+                
+                if (game.cpuPaddle.y < 0) game.cpuPaddle.y = 0;
+                if (game.cpuPaddle.y > 400) game.cpuPaddle.y = 400;
+            }
+
+            if (!game.ball.active) return;
+
+            game.ball.x += game.ball.speedX;
+            game.ball.y += game.ball.speedY;
+
+            if (game.ball.y - 6 < 0 || game.ball.y + 6 > 500) {
+                game.ball.speedY = -game.ball.speedY;
+                playBeep(300, 0.1);
+            }
+
+            if (game.ball.x - 6 < 30 && game.ball.x + 6 > 20 &&
+                game.ball.y + 6 > game.playerPaddle.y && game.ball.y - 6 < game.playerPaddle.y + 100) {
+                game.ball.speedX = Math.abs(game.ball.speedX);
+                let hitPos = (game.ball.y - game.playerPaddle.y) / 100 - 0.5;
+                game.ball.speedY = hitPos * 10;
+                playBeep(550, 0.1);
+            }
+
+            if (game.ball.x + 6 > 770 && game.ball.x - 6 < 780 &&
+                game.ball.y + 6 > game.cpuPaddle.y && game.ball.y - 6 < game.cpuPaddle.y + 100) {
+                game.ball.speedX = -Math.abs(game.ball.speedX);
+                let hitPos = (game.ball.y - game.cpuPaddle.y) / 100 - 0.5;
+                game.ball.speedY = hitPos * 10;
+                playBeep(450, 0.1);
+            }
+
+            if (game.ball.x > 800) {
+                game.playerScore++;
+                playBeep(700, 0.2);
+                updateScore();
+                resetBall();
+            }
+
+            if (game.ball.x < 0) {
+                game.cpuScore++;
+                playBeep(150, 0.3);
+                updateScore();
+                resetBall();
+            }
+        }
+
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, 800, 500);
+
+            drawCenterLine();
+
+            drawRect(game.playerPaddle.x, game.playerPaddle.y, game.playerPaddle.width, game.playerPaddle.height);
+            drawRect(game.cpuPaddle.x, game.cpuPaddle.y, game.cpuPaddle.width, game.cpuPaddle.height);
+
+            drawSquare(game.ball.x, game.ball.y, game.ball.size);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
