@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Endless Weave</title>
+<style>
+  :root{ --bg:#000; --road:#111; --lane:#666; --hud:#E6E6E6; --sprite:#F8F8F8; --scanline:rgba(255,255,255,0.04); }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--hud);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;}
+  .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;gap:10px;padding:12px;}
+  canvas{width:min(96vw,420px);aspect-ratio:9/12;height:auto;image-rendering:pixelated;border:2px solid var(--hud);background:var(--road);box-shadow:0 0 0 6px rgba(255,255,255,0.04), 0 0 40px rgba(255,255,255,0.08) inset;}
+  .panel{width:min(96vw,420px);display:flex;align-items:center;justify-content:flex-end;font-size:14px;text-transform:uppercase;}
+  .btn{border:1px solid var(--hud);padding:6px 10px;background:transparent;color:var(--hud);cursor:pointer;}
+  .scanlines:after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(to bottom,transparent 0,transparent 2px,var(--scanline) 3px,transparent 4px);mix-blend-mode:overlay;pointer-events:none;}
+  .bezel{position:relative;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel"><button id="startBtn" class="btn">Start</button></div>
+    <div class="bezel scanlines"><canvas id="game" width="360" height="480" aria-label="Retro racing game"></canvas></div>
+  </div>
+
+<script>
+(()=>{
+  const C = document.getElementById('game');
+  const X = C.getContext('2d');
+  const W = C.width, H = C.height;
+
+  // -------- Audio --------
+  let AC;
+  function blip(freq=440, dur=0.06, type='square', gain=0.03){
+    try{
+      if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+      const o = AC.createOscillator(), g = AC.createGain();
+      o.type = type; o.frequency.value = freq; g.gain.value = gain;
+      o.connect(g); g.connect(AC.destination);
+      o.start(); o.stop(AC.currentTime + dur);
+    }catch(e){}
+  }
+  const SFX = { pass(){ blip(660,0.05,'square',0.02); }, crash(){ blip(120,0.12,'square',0.06); } };
+
+  // -------- State --------
+  const S = {
+    scene:'title',
+    lanes:3, roadW: Math.floor(W*0.6), roadX: Math.floor(W*0.2), laneW: 0,
+    dashOffset: 0, dashH: 24, dashGap: 24,
+    player:{lane:1,x:0,y:H-80,w:24,h:40,targetLane:1},
+    cars:[],
+    // pacing (endless, no top limit)
+    speed: 105, accel: 3.0,           // faster ramp
+    distance: 0, lastT: 0, overtakes: 0,
+    // weave pattern (deterministic base, but dynamic gap if needed)
+    segH: 200,
+    segAccum: 0,
+    gapSeq: [0,1,2,1],
+    gapIdx: 0,
+    // speeds
+    vSlow: 0.33, vFast: 0.52,
+    // following
+    headway: 16,
+    // guaranteed passability windows
+    safeWindowTop: -10,
+    safeWindowBottom: 240,   // a bit deeper near-field
+    bufferDepth: 120,        // extra buffer to avoid future 3-lane walls
+    // scaling factors
+    DASH_SCALE: 0.03 * 60,   // toned-down dash speed
+    SEG_RATE: 0.45           // segment rate growth with speed
+  };
+  S.laneW = Math.floor(S.roadW / S.lanes);
+  S.player.x = laneCenter(1)-S.player.w/2;
+
+  function laneCenter(l){ return S.roadX + l*S.laneW + S.laneW/2; }
+  function resetRun(){
+    S.cars.length=0; S.speed=105; S.distance=0; S.overtakes=0;
+    S.player.lane=S.player.targetLane=1; S.player.x=laneCenter(1)-S.player.w/2;
+    S.segAccum = 0; S.gapIdx = 0;
+  }
+
+  // input
+  window.addEventListener('keydown', e=>{
+    if(e.code==='ArrowLeft'||e.code==='KeyA'){ e.preventDefault(); shiftLane(-1); }
+    if(e.code==='ArrowRight'||e.code==='KeyD'){ e.preventDefault(); shiftLane(1); }
+    if(e.code==='Space'){
+      e.preventDefault();
+      if(S.scene==='title'||S.scene==='gameover') startGame();
+      else if(S.scene==='playing') pauseGame();
+      else if(S.scene==='paused') resumeGame();
+    }
+  });
+  document.getElementById('startBtn').addEventListener('click', ()=>{
+    if(S.scene==='playing') pauseGame();
+    else if(S.scene==='paused') resumeGame();
+    else startGame();
+  });
+
+  function startGame(){ resetRun(); S.scene='playing'; S.lastT=performance.now(); }
+  function pauseGame(){ S.scene='paused'; }
+  function resumeGame(){ S.scene='playing'; S.lastT=performance.now(); }
+  function shiftLane(d){
+    if(S.scene!=='playing' && S.scene!=='title') return;
+    const next = Math.max(0, Math.min(S.lanes-1, S.player.targetLane + d));
+    if(next!==S.player.targetLane){
+      S.player.targetLane = next; S.player.lane = next; S.player.x = laneCenter(next)-S.player.w/2;
+    }
+  }
+
+  // -------- Safety helpers --------
+  function rectOverlap(a1,a2,b1,b2){ return !(a2<=b1 || a1>=b2); }
+
+  function occupancyInWindow(top, bottom){
+    const occ = [false,false,false];
+    for(const c of S.cars){
+      if(rectOverlap(top, bottom, c.y, c.y+c.h)) occ[c.lane] = true;
+    }
+    return occ;
+  }
+
+  function chooseSafeGap(preferredGap){
+    const top = S.safeWindowTop;
+    const bottom = Math.min(H - 100, S.player.y - (H - S.safeWindowBottom));
+    const occ = occupancyInWindow(top, bottom);
+    // If preferred gap is free, keep it
+    if(!occ[preferredGap]) return preferredGap;
+    // Else pick any free lane
+    for(let l=0;l<3;l++){ if(!occ[l]) return l; }
+    // If no lane is free in near-field, return -1 to skip spawn
+    return -1;
+  }
+
+  function extendedSafe(top, bottom){
+    // Ensure in extended buffer we don't already have all 3 lanes blocked
+    const extTop = Math.max(-100, top - S.bufferDepth);
+    const extBottom = Math.min(H, bottom + S.bufferDepth);
+    const occ = occupancyInWindow(extTop, extBottom);
+    return !(occ[0] && occ[1] && occ[2]);
+  }
+
+  // -------- Passability-guarded deterministic segments (with dynamic gap) --------
+  function spawnSegment(){
+    // propose gap from pattern
+    const patternGap = S.gapSeq[S.gapIdx % S.gapSeq.length];
+    const gap = chooseSafeGap(patternGap);
+    if(gap < 0) return false; // no safe gap now
+
+    const top = S.safeWindowTop;
+    const bottom = Math.min(H - 100, S.player.y - (H - S.safeWindowBottom));
+    if(!extendedSafe(top, bottom)) return false;
+
+    const blocked = [0,1,2].filter(l=>l!==gap);
+    placeCar(blocked[0], -50, S.vSlow);
+    placeCar(blocked[1], -120, S.vFast);
+
+    S.gapIdx++;
+    return true;
+  }
+
+  function placeCar(lane, y, v){
+    // Slight speed lift with player speed for stronger closing
+    const vDyn = v + Math.min(0.3, S.speed * 0.0012);
+    const below = nearestBelow(lane, y);
+    let vFinal = vDyn;
+    if(below){
+      if(vFinal > below.v - 0.015) vFinal = Math.max(0.22, below.v - 0.015);
+      const minY = (below.y - below.h - S.headway);
+      if(y > minY) y = minY - 2;
+    }
+    const car = { lane, x: laneCenter(lane)-11, y, w:22, h:36, v: vFinal, passed:false };
+    S.cars.push(car);
+  }
+
+  function nearestBelow(lane, ySpawn){
+    let best=null;
+    for(const c of S.cars){ if(c.lane===lane && c.y > ySpawn){ if(!best || c.y < best.y) best = c; } }
+    return best;
+  }
+
+  // Maintain headway by speed matching only (no teleporting)
+  function laneFollowing(){
+    for(let lane=0; lane<3; lane++){
+      const laneCars = S.cars.filter(c => c.lane===lane).sort((a,b)=> a.y - b.y);
+      for(let i=0;i<laneCars.length-1;i++){
+        const back = laneCars[i];
+        const front = laneCars[i+1];
+        const gap = (front.y - (back.y + back.h));
+        if(gap < S.headway + 2){
+          back.v = Math.min(back.v, front.v);
+        }
+      }
+    }
+  }
+
+  // ---------------- Update & Draw ----------------
+  function update(dt, now){
+    if(S.scene!=='playing') return;
+    // No top limit: just keep accelerating
+    S.speed += S.accel*dt;
+    const ms = S.speed * (1000/3600);
+    S.distance += ms*dt;
+
+    // toned-down dash scroll so cars feel faster by comparison
+    S.dashOffset += S.speed * (S.DASH_SCALE/60) * dt * 60;
+
+    // deterministic segment spawning, guarded for passability
+    S.segAccum += (S.speed * S.SEG_RATE) * dt;
+    if(S.segAccum >= S.segH){
+      const spawned = spawnSegment();
+      if(spawned){ S.segAccum = 0; } else { S.segAccum = S.segH * 0.95; }
+    }
+
+    // move cars
+    for(const c of S.cars){ c.y += S.speed * c.v * dt; }
+
+    // enforce headway via speed cap only
+    laneFollowing();
+
+    // prune off-screen
+    S.cars = S.cars.filter(c => c.y <= H + 60);
+
+    // collisions & passes
+    for(const c of S.cars){
+      if(hit(S.player,c)){ SFX.crash(); S.scene='gameover'; return; }
+      if(!c.passed && c.y + c.h > S.player.y + S.player.h){ c.passed=true; S.overtakes++; SFX.pass(); }
+    }
+  }
+  function hit(a,b){ return !(a.x+a.w<b.x || a.x>b.x+b.w || a.y+a.h<b.y || a.y>b.y+b.h); }
+
+  function draw(){
+    X.fillStyle='#111'; X.fillRect(0,0,W,H);
+    X.fillStyle='#2a2a2a'; X.fillRect(S.roadX-6,0,6,H); X.fillRect(S.roadX+S.roadW,0,6,H);
+    X.fillStyle='#666'; const period=S.dashH+S.dashGap;
+    for(let l=1;l<S.lanes;l++){ const x=S.roadX+l*S.laneW-2; let y=-S.dashH+(S.dashOffset%period); while(y<H){ X.fillRect(x,y,4,S.dashH); y+=period; } }
+    for(const c of S.cars){ drawCar(c.x,c.y,c.w,c.h); }
+    drawPlayer(S.player.x,S.player.y,S.player.w,S.player.h);
+    drawHUD();
+    if(S.scene==='title') banner('','PRESS SPACE / START');
+    if(S.scene==='paused') banner('','PRESS SPACE TO RESUME');
+    if(S.scene==='gameover'){
+      banner('','PRESS SPACE TO RESTART');
+      X.fillStyle='#E6E6E6'; X.font='12px monospace';
+      center(`Distance: ${Math.floor(S.distance)} m`, H*0.62);
+      center(`Passes: ${S.overtakes}`, H*0.62+18);
+    }
+  }
+  function drawCar(x,y,w,h){ X.fillStyle='#F8F8F8'; X.fillRect(x|0,y|0,w,h); X.fillStyle='#111'; X.fillRect((x+4)|0,(y+10)|0,w-8,8); }
+  function drawPlayer(x,y,w,h){ X.fillStyle='#F8F8F8'; X.fillRect(x|0,y|0,w,h); X.fillStyle='#111'; X.fillRect((x+5)|0,(y+6)|0,w-10,6); }
+  function drawHUD(){
+    X.fillStyle='#E6E6E6'; X.font='12px monospace'; X.textBaseline='top';
+    const dist = Math.floor(S.distance/10)*10; const sp = Math.round(S.speed);
+    const l=10, top=8;
+    X.fillText(`SPEED ${sp}`, l, top);
+    X.fillText(`DIST ${dist} m`, l, top+14);
+    X.fillText(`PASS ${S.overtakes}`, l, top+28);
+  }
+  function banner(title, sub){
+    X.fillStyle='rgba(0,0,0,0.7)'; X.fillRect(20, H*0.25, W-40, 120);
+    X.strokeStyle='#E6E6E6'; X.strokeRect(20, H*0.25, W-40, 120);
+    X.fillStyle='#E6E6E6'; X.font='12px monospace'; center(sub, H*0.25+52);
+  }
+  function center(str,y){ const m=X.measureText(str); X.fillText(str, ((W-m.width)/2)|0, y|0); }
+
+  // loop
+  function loop(now){
+    if(!S.lastT) S.lastT=now;
+    const dt = Math.min(0.05, (now - S.lastT)/1000); S.lastT = now;
+    update(dt, now); draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // title frame
+  S.scene='title'; draw();
+})();
+</script>
+</body>
+</html>
