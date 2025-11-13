@@ -568,7 +568,9 @@
                 if (fruitTimer >= 300) {
                     fruitActive = false;
                     if (maze[fruitY][fruitX] === 4) {
-                        maze[fruitY][fruitX] = 0;
+                        // Restore pellet if there was one, otherwise leave empty
+                        maze[fruitY][fruitX] = fruitHadPellet ? 2 : 0;
+                        fruitHadPellet = false;
                     }
                     fruitTimer = 0;
                 }
