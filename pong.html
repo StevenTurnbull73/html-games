@@ -19,6 +19,31 @@
             justify-content: center;
             min-height: 100vh;
         }
+        .difficulty-toggle {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .difficulty-btn {
+            background: #333;
+            color: #fff;
+            border: 2px solid #fff;
+            padding: 10px 20px;
+            font-size: 0.8em;
+            font-family: 'Press Start 2P', 'Courier New', monospace;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .difficulty-btn.active {
+            background: #fff;
+            color: #000;
+        }
+        .difficulty-btn:hover {
+            background: #555;
+        }
+        .difficulty-btn.active:hover {
+            background: #ccc;
+        }
         canvas {
             border-top: 4px solid #fff;
             border-bottom: 4px solid #fff;
@@ -31,6 +56,13 @@
             text-align: center;
             color: #fff;
             letter-spacing: 2px;
+        }
+        .win-message {
+            font-size: 1.5em;
+            margin-top: 10px;
+            text-align: center;
+            color: #fff;
+            min-height: 40px;
         }
         button {
             background: #fff;
@@ -50,10 +82,19 @@
 </head>
 <body>
     
+    <div class="difficulty-toggle">
+        <button class="difficulty-btn active" id="easyBtn">EASY</button>
+        <button class="difficulty-btn" id="classicBtn">CLASSIC</button>
+    </div>
+    
     <canvas id="gameCanvas" width="800" height="500"></canvas>
     
     <div class="score">
         <span id="scoreDisplay">You: 0 | Computer: 0 | Press SPACE to start</span>
+    </div>
+    
+    <div class="win-message">
+        <span id="winMessage"></span>
     </div>
     
     <button id="resetBtn">New Game</button>
@@ -62,7 +103,12 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const scoreDisplay = document.getElementById('scoreDisplay');
+        const winMessage = document.getElementById('winMessage');
         const resetBtn = document.getElementById('resetBtn');
+        const easyBtn = document.getElementById('easyBtn');
+        const classicBtn = document.getElementById('classicBtn');
+
+        let difficulty = 'easy'; // Start with easy mode
 
         let audioContext = null;
         
@@ -105,7 +151,8 @@
                 size: 12,
                 speedX: 0,
                 speedY: 0,
-                active: false
+                active: false,
+                baseSpeed: 3.5 // Easy mode starting speed
             },
             playerPaddle: {
                 x: 20,
@@ -119,7 +166,8 @@
                 y: 200,
                 width: 10,
                 height: 100,
-                speed: 2.5
+                speed: 1.5, // Easy mode speed
+                deadZone: 30 // Easy mode dead zone
             },
             playerScore: 0,
             cpuScore: 0,
@@ -136,10 +184,39 @@
         });
 
         resetBtn.addEventListener('click', resetGame);
+        
+        easyBtn.addEventListener('click', function() {
+            setDifficulty('easy');
+        });
+        
+        classicBtn.addEventListener('click', function() {
+            setDifficulty('classic');
+        });
+
+        function setDifficulty(level) {
+            difficulty = level;
+            
+            if (level === 'easy') {
+                game.ball.baseSpeed = 3.5;
+                game.cpuPaddle.speed = 1.5;
+                game.cpuPaddle.deadZone = 30;
+                easyBtn.classList.add('active');
+                classicBtn.classList.remove('active');
+            } else {
+                game.ball.baseSpeed = 5;
+                game.cpuPaddle.speed = 2.5;
+                game.cpuPaddle.deadZone = 20;
+                easyBtn.classList.remove('active');
+                classicBtn.classList.add('active');
+            }
+            
+            resetGame();
+        }
 
         function resetGame() {
             game.playerScore = 0;
             game.cpuScore = 0;
+            winMessage.textContent = '';
             resetBall();
             updateScore();
         }
@@ -154,7 +231,7 @@
 
         function serveBall() {
             if (!game.ball.active) {
-                game.ball.speedX = 5;
+                game.ball.speedX = game.ball.baseSpeed;
                 game.ball.speedY = (Math.random() - 0.5) * 6;
                 game.ball.active = true;
                 playBeep(600, 0.1);
@@ -188,16 +265,12 @@
             
             if (game.playerScore >= 5) {
                 playBeep(800, 0.5);
-                setTimeout(function() {
-                    alert('You Win! 🎉 You beat the computer 5-' + game.cpuScore + '!');
-                    resetGame();
-                }, 100);
+                winMessage.textContent = 'YOU WIN!';
+                game.ball.active = false;
             } else if (game.cpuScore >= 5) {
                 playBeep(200, 0.5);
-                setTimeout(function() {
-                    alert('Computer Wins! 💻 Better luck next time! ' + game.cpuScore + '-' + game.playerScore);
-                    resetGame();
-                }, 100);
+                winMessage.textContent = 'COMPUTER WINS!';
+                game.ball.active = false;
             }
         }
 
@@ -218,9 +291,9 @@
                 const ballY = game.ball.y;
                 
                 if (game.ball.speedX > 0) {
-                    if (paddleCenter < ballY - 20) {
+                    if (paddleCenter < ballY - game.cpuPaddle.deadZone) {
                         game.cpuPaddle.y += game.cpuPaddle.speed;
-                    } else if (paddleCenter > ballY + 20) {
+                    } else if (paddleCenter > ballY + game.cpuPaddle.deadZone) {
                         game.cpuPaddle.y -= game.cpuPaddle.speed;
                     }
                 }
