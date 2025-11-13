@@ -13,6 +13,7 @@
 
         body {
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
@@ -21,9 +22,50 @@
             padding: 20px;
         }
 
+        .mode-toggle {
+            margin-bottom: 20px;
+            background: linear-gradient(145deg, #2c3e50, #34495e);
+            padding: 15px 30px;
+            border-radius: 25px;
+            box-shadow: 
+                0 0 30px rgba(255, 255, 255, 0.2),
+                0 4px 8px rgba(0, 0, 0, 0.5);
+        }
+
+        .toggle-button {
+            background: linear-gradient(145deg, #3d5266, #2c3e50);
+            border: none;
+            color: #ecf0f1;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 20px;
+            cursor: pointer;
+            box-shadow: 
+                0 4px 8px rgba(0, 0, 0, 0.3),
+                inset 0 1px 2px rgba(255, 255, 255, 0.1);
+            transition: all 0.2s;
+        }
+
+        .toggle-button:hover {
+            background: linear-gradient(145deg, #4d6276, #3c4e60);
+        }
+
+        .toggle-button:active {
+            transform: scale(0.98);
+        }
+
+        .toggle-button.active {
+            background: linear-gradient(145deg, #27ae60, #229954);
+            box-shadow: 
+                0 4px 8px rgba(0, 0, 0, 0.3),
+                inset 0 1px 2px rgba(255, 255, 255, 0.2),
+                0 0 20px rgba(39, 174, 96, 0.5);
+        }
+
         .phone-container {
-            width: 350px;
-            height: 580px;
+            width: 400px;
+            height: 660px;
             background: linear-gradient(145deg, #2c3e50, #34495e);
             border-radius: 30px;
             padding: 40px 30px;
@@ -76,11 +118,12 @@
         .screen {
             background: #c7d2a0;
             width: 100%;
-            height: 174px;
+            height: 198px;
             position: relative;
             border: 3px solid #7a8b6f;
             box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.2);
             overflow: hidden;
+            box-sizing: border-box;
         }
 
         .screen-info {
@@ -96,7 +139,7 @@
         canvas {
             display: block;
             background: #c7d2a0;
-            margin: 3px;
+            margin: 0 auto;
         }
 
         .keypad {
@@ -188,6 +231,11 @@
     </style>
 </head>
 <body>
+    <div class="mode-toggle">
+        <button class="toggle-button active" id="classicBtn">Classic Mode</button>
+        <button class="toggle-button" id="easyBtn">Easy Mode</button>
+    </div>
+    
     <div class="phone-container">
         <div class="nokia-logo">NOKIA</div>
         
@@ -201,7 +249,7 @@
                 <span>High: <span id="highScore">0</span></span>
             </div>
             <div class="screen">
-                <canvas id="gameCanvas" width="280" height="168"></canvas>
+                <canvas id="gameCanvas" width="320" height="192"></canvas>
                 <div class="game-over" id="gameOver">
                     <h2>GAME OVER</h2>
                     <p>Press ⭘ to restart</p>
@@ -245,7 +293,9 @@
         const GRID_SIZE_X = 20;
         const GRID_SIZE_Y = 12;
         const CELL_SIZE = Math.floor(canvas.width / GRID_SIZE_X);
-        const GAME_SPEED = 200;
+        
+        let gameMode = 'classic'; // 'classic' or 'easy'
+        let GAME_SPEED = 200;
 
         let snake = [{x: 10, y: 6}];
         let direction = {x: 1, y: 0};
@@ -253,10 +303,16 @@
         let food = {x: 15, y: 6};
         let score = 0;
         let highScore = localStorage.getItem('snakeHighScore') || 0;
+        let highScoreEasy = localStorage.getItem('snakeHighScoreEasy') || 0;
         let gameRunning = false;
         let gameLoop;
 
-        highScoreElement.textContent = highScore;
+        // Update high score display based on mode
+        function updateHighScoreDisplay() {
+            highScoreElement.textContent = gameMode === 'classic' ? highScore : highScoreEasy;
+        }
+
+        updateHighScoreDisplay();
 
         // Very simple beep sounds like the original Nokia
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -299,14 +355,17 @@
         }
 
         function drawFood() {
-            // Draw food as a simple filled square like the original game
+            // Draw food as a circle to differentiate from snake
             ctx.fillStyle = '#2c3e1f';
-            ctx.fillRect(
-                food.x * CELL_SIZE + 1, 
-                food.y * CELL_SIZE + 1, 
-                CELL_SIZE - 2, 
-                CELL_SIZE - 2
+            ctx.beginPath();
+            ctx.arc(
+                food.x * CELL_SIZE + CELL_SIZE / 2,
+                food.y * CELL_SIZE + CELL_SIZE / 2,
+                CELL_SIZE / 2.5,
+                0,
+                Math.PI * 2
             );
+            ctx.fill();
         }
 
         function generateFood() {
@@ -335,11 +394,18 @@
                 y: snake[0].y + direction.y
             };
 
-            console.log('Current head: x=' + snake[0].x + ', y=' + snake[0].y + ' | Next head: x=' + head.x + ', y=' + head.y);
+            console.log('Current head: x=' + snake[0].x + ', y=' + snake[0].y + ' | Next head: x=' + head.x + ', y=' + head.y + ' | Direction: x=' + direction.x + ', y=' + direction.y);
 
             // Check wall collision
             if (head.x < 0 || head.x >= GRID_SIZE_X || head.y < 0 || head.y >= GRID_SIZE_Y) {
-                console.log('Wall collision at: x=' + head.x + ', y=' + head.y + ' | Grid bounds: x=' + GRID_SIZE_X + ', y=' + GRID_SIZE_Y);
+                console.log('Wall collision detected! Easy mode: ' + gameMode);
+                
+                // In easy mode, just don't move - stay at current position
+                if (gameMode === 'easy') {
+                    draw(); // Redraw to keep snake visible
+                    return;
+                }
+                
                 endGame();
                 return;
             }
@@ -360,10 +426,19 @@
                 score++;
                 scoreElement.textContent = score;
                 playEatSound();
-                if (score > highScore) {
-                    highScore = score;
-                    highScoreElement.textContent = highScore;
-                    localStorage.setItem('snakeHighScore', highScore);
+                
+                if (gameMode === 'classic') {
+                    if (score > highScore) {
+                        highScore = score;
+                        highScoreElement.textContent = highScore;
+                        localStorage.setItem('snakeHighScore', highScore);
+                    }
+                } else {
+                    if (score > highScoreEasy) {
+                        highScoreEasy = score;
+                        highScoreElement.textContent = highScoreEasy;
+                        localStorage.setItem('snakeHighScoreEasy', highScoreEasy);
+                    }
                 }
                 generateFood();
             } else {
@@ -396,6 +471,7 @@
             scoreElement.textContent = score;
             gameRunning = true;
             gameOverElement.style.display = 'none';
+            updateHighScoreDisplay();
             generateFood();
             draw();
             
@@ -404,12 +480,13 @@
         }
 
         function changeDirection(newDirection) {
-            // Prevent reversing only if snake is longer than 1
+            // Always prevent reversing if snake is longer than 1
             if (snake.length > 1 && 
                 newDirection.x === -direction.x && 
                 newDirection.y === -direction.y) {
                 return;
             }
+            
             nextDirection = newDirection;
         }
 
@@ -475,6 +552,42 @@
 
         // Initial draw
         draw();
+
+        // Mode toggle functionality
+        const classicBtn = document.getElementById('classicBtn');
+        const easyBtn = document.getElementById('easyBtn');
+
+        classicBtn.addEventListener('click', () => {
+            if (gameMode === 'classic') return;
+            
+            gameMode = 'classic';
+            GAME_SPEED = 200;
+            
+            classicBtn.classList.add('active');
+            easyBtn.classList.remove('active');
+            
+            // Stop current game and reset
+            if (gameRunning) {
+                endGame();
+            }
+            updateHighScoreDisplay();
+        });
+
+        easyBtn.addEventListener('click', () => {
+            if (gameMode === 'easy') return;
+            
+            gameMode = 'easy';
+            GAME_SPEED = 300; // Slower speed
+            
+            easyBtn.classList.add('active');
+            classicBtn.classList.remove('active');
+            
+            // Stop current game and reset
+            if (gameRunning) {
+                endGame();
+            }
+            updateHighScoreDisplay();
+        });
     </script>
 </body>
 </html>
