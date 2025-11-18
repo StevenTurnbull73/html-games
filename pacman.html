@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pac-Man Clone - Retro Game Museum</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pac-Man - Mobile with Demo</title>
     <style>
         body {
             margin: 0;
@@ -40,6 +40,9 @@
             display: block;
             margin: 0 auto;
             cursor: pointer;
+            max-width: 100%;
+            height: auto;
+            touch-action: none;
         }
         
         canvas:focus {
@@ -73,6 +76,28 @@
             font-size: 18px;
             color: #ffff00;
         }
+        
+        #demoBtn {
+            margin-top: 15px;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+            background: #2121de;
+            color: #ffff00;
+            border: 3px solid #ffff00;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        #demoBtn:hover {
+            background: #ffff00;
+            color: #2121de;
+        }
+        
+        #demoBtn.active {
+            background: #ff0000;
+            border-color: #ffffff;
+        }
     </style>
 </head>
 <body>
@@ -82,17 +107,18 @@
         <canvas id="gameCanvas" width="560" height="620" tabindex="0"></canvas>
         <div id="gameOver">
             GAME OVER!
-            <div class="restart">Press SPACE to restart</div>
+            <div class="restart" id="gameOverText">Tap to restart</div>
         </div>
         <div id="victory">
             YOU WIN!
-            <div class="restart">Press SPACE to play again</div>
+            <div class="restart" id="victoryText">Tap to play again</div>
         </div>
         <div id="instructions">
-            <span style="color: #ffff00; font-size: 20px;">Press SPACE BAR to start!</span><br>
-            Use ARROW KEYS to move<br>
+            <span style="color: #ffff00; font-size: 20px;" id="startText">Tap to start!</span><br>
+            <span id="controlText">Swipe to move</span><br>
             Eat all pellets to win!<br>
-            Power pellets let you eat ghosts!
+            Power pellets let you eat ghosts!<br>
+            <button id="demoBtn">DEMO</button>
         </div>
     </div>
 
@@ -128,6 +154,8 @@
         let introPlaying = false; // Track if intro is currently playing
         let ghostScorePopups = []; // Array to track score popups when eating ghosts
         let ghostEatenCount = 0; // Track how many ghosts eaten in power mode
+        let demoMode = false;
+        let demoLastDir = 0; // Remember last direction to avoid reversing
         
         // Audio context for sound effects
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -866,6 +894,7 @@
             introPlaying = false;
             deathAnimation = false;
             deathAnimationFrame = 0;
+            demoLastDir = 0;
             stopPowerSiren();
             gameOverElement.style.display = 'none';
             victoryElement.style.display = 'none';
@@ -1106,6 +1135,110 @@
             ctx.textAlign = 'left'; // Reset
         }
         
+        function simpleDemoAI() {
+            if (!demoMode) return;
+            
+            const gridX = Math.round(pacman.x);
+            const gridY = Math.round(pacman.y);
+            
+            // Only decide at intersections (centered position)
+            const centered = Math.abs(pacman.x - gridX) < 0.1 && Math.abs(pacman.y - gridY) < 0.1;
+            if (!centered) return;
+            
+            // Get valid directions (exclude reverse unless stuck)
+            const opposite = {1: 3, 2: 4, 3: 1, 4: 2}[demoLastDir] || 0;
+            const allDirs = [];
+            if (canMove(gridX, gridY - 1, true)) allDirs.push({dir: 1, x: gridX, y: gridY - 1});
+            if (canMove(gridX + 1, gridY, true)) allDirs.push({dir: 2, x: gridX + 1, y: gridY});
+            if (canMove(gridX, gridY + 1, true)) allDirs.push({dir: 3, x: gridX, y: gridY + 1});
+            if (canMove(gridX - 1, gridY, true)) allDirs.push({dir: 4, x: gridX - 1, y: gridY});
+            
+            // Prefer non-reverse directions
+            const validDirs = allDirs.filter(d => d.dir !== opposite);
+            const options = validDirs.length > 0 ? validDirs : allDirs;
+            
+            if (options.length === 0) return;
+            
+            // Find nearest ghost
+            let nearestGhost = null;
+            let ghostDist = 999;
+            for (let ghost of ghosts) {
+                if (ghost.eaten) continue;
+                const d = Math.abs(ghost.x - gridX) + Math.abs(ghost.y - gridY);
+                if (d < ghostDist) {
+                    ghostDist = d;
+                    nearestGhost = ghost;
+                }
+            }
+            
+            // PRIORITY 1: Run from ghost if close and not in power mode
+            if (!powerMode && nearestGhost && ghostDist < 6) {
+                let bestDir = options[0];
+                let bestDist = 0;
+                
+                for (let d of options) {
+                    const dist = Math.abs(d.x - nearestGhost.x) + Math.abs(d.y - nearestGhost.y);
+                    if (dist > bestDist) {
+                        bestDist = dist;
+                        bestDir = d;
+                    }
+                }
+                pacman.nextDirection = bestDir.dir;
+                demoLastDir = bestDir.dir;
+                return;
+            }
+            
+            // PRIORITY 2: Chase ghost if in power mode
+            if (powerMode && nearestGhost && ghostDist < 10) {
+                let bestDir = options[0];
+                let bestDist = 999;
+                
+                for (let d of options) {
+                    const dist = Math.abs(d.x - nearestGhost.x) + Math.abs(d.y - nearestGhost.y);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestDir = d;
+                    }
+                }
+                pacman.nextDirection = bestDir.dir;
+                demoLastDir = bestDir.dir;
+                return;
+            }
+            
+            // PRIORITY 3: Seek nearest pellet
+            let nearestPellet = null;
+            let minDist = 999;
+            
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    if (maze[y][x] === 2 || maze[y][x] === 3 || maze[y][x] === 4) {
+                        let d = Math.abs(x - gridX) + Math.abs(y - gridY);
+                        // Prioritize power pellets if ghost is nearby
+                        if (maze[y][x] === 3 && ghostDist < 8) d *= 0.5;
+                        if (d < minDist) {
+                            minDist = d;
+                            nearestPellet = {x, y};
+                        }
+                    }
+                }
+            }
+            
+            if (nearestPellet) {
+                let bestDir = options[0];
+                let bestDist = 999;
+                
+                for (let d of options) {
+                    const dist = Math.abs(d.x - nearestPellet.x) + Math.abs(d.y - nearestPellet.y);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestDir = d;
+                    }
+                }
+                pacman.nextDirection = bestDir.dir;
+                demoLastDir = bestDir.dir;
+            }
+        }
+        
         function update() {
             if (!gameRunning) return;
             
@@ -1168,6 +1301,7 @@
             }
             
             movePacman();
+            simpleDemoAI();
             
             for (let i = 0; i < ghosts.length; i++) {
                 moveGhost(ghosts[i], i);
@@ -1206,6 +1340,62 @@
         // Start game
         updateScore();
         updateLives();
+        
+        // Mobile swipe controls
+        let touchStartX = 0, touchStartY = 0;
+        
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+            
+            // Start game
+            if (!gameStarted && !introPlaying) startGame();
+            
+            // Restart after game over or victory
+            const gameOverEl = document.getElementById('gameOver');
+            const victoryEl = document.getElementById('victory');
+            if (gameOverEl.style.display === 'block' || victoryEl.style.display === 'block') {
+                resetGame();
+                startGame();
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (!gameStarted) return;
+            
+            const dx = e.changedTouches[0].clientX - touchStartX;
+            const dy = e.changedTouches[0].clientY - touchStartY;
+            
+            if (Math.abs(dx) > Math.abs(dy)) {
+                pacman.nextDirection = dx > 0 ? 2 : 4;
+            } else {
+                pacman.nextDirection = dy > 0 ? 3 : 1;
+            }
+        }, { passive: false });
+        
+        // Demo button
+        document.getElementById('demoBtn').addEventListener('click', () => {
+            demoMode = !demoMode;
+            document.getElementById('demoBtn').textContent = demoMode ? 'STOP' : 'DEMO';
+            document.getElementById('demoBtn').classList.toggle('active');
+            
+            if (demoMode && !gameStarted) startGame();
+            if (demoMode && !gameRunning) {
+                resetGame();
+                startGame();
+            }
+        });
+        
+        // Detect mobile
+        const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (!isMobile) {
+            document.getElementById('startText').textContent = 'Press SPACE to start!';
+            document.getElementById('controlText').textContent = 'Use ARROW KEYS';
+            document.getElementById('gameOverText').textContent = 'Press SPACE to restart';
+            document.getElementById('victoryText').textContent = 'Press SPACE to play again';
+        }
         
         console.log('Game initialized. Press SPACE BAR to start!');
         console.log('Initial state - gameRunning:', gameRunning, 'gameStarted:', gameStarted);
