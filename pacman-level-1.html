@@ -35,7 +35,6 @@
             display: block;
             margin: 0 auto;
             cursor: pointer;
-            /* Make it responsive but keep internal resolution */
             max-width: 100%;
             height: auto;
         }
@@ -96,6 +95,7 @@
         @media (max-width: 600px) {
             body {
                 padding: 10px;
+                justify-content: flex-start; /* don't vertically centre on short screens */
             }
             #score {
                 font-size: 18px;
@@ -105,6 +105,10 @@
             }
             #instructions {
                 font-size: 14px;
+            }
+            #demoButton {
+                font-size: 14px;
+                padding: 6px 14px;
             }
         }
     </style>
@@ -163,9 +167,41 @@
         }
         setInstructions();
         
-        const TILE_SIZE = 40;
+        // Grid & tile sizing (now responsive)
         const GRID_WIDTH = 14;
         const GRID_HEIGHT = 15;
+        let TILE_SIZE = 40; // will be recalculated on mobile
+
+        function initResponsiveCanvas() {
+            // Only adjust aggressively on touch devices (phones/tablets)
+            if (isTouchDevice) {
+                const viewportWidth = Math.min(
+                    window.innerWidth || 560,
+                    document.documentElement.clientWidth || 560
+                );
+                // Leave a little padding either side
+                const maxCanvasWidth = Math.min(560, viewportWidth - 20);
+                let tile = Math.floor(maxCanvasWidth / GRID_WIDTH);
+                // Don't let tiles become too tiny
+                if (tile < 20) tile = 20;
+                TILE_SIZE = tile;
+                canvas.width = TILE_SIZE * GRID_WIDTH;
+                canvas.height = TILE_SIZE * GRID_HEIGHT;
+            } else {
+                // Desktop: keep original size
+                TILE_SIZE = 40;
+                canvas.width = TILE_SIZE * GRID_WIDTH;
+                canvas.height = TILE_SIZE * GRID_HEIGHT;
+            }
+        }
+
+        initResponsiveCanvas();
+        // Recalculate on orientation / resize for touch devices
+        window.addEventListener('resize', () => {
+            if (isTouchDevice) {
+                initResponsiveCanvas();
+            }
+        });
         
         // Game state
         let score = 0;
@@ -418,6 +454,8 @@
             victoryElement.style.display = 'none';
             // Reset texts to default per device when starting a fresh game
             setInstructions();
+            // Ensure canvas stays in sync with current screen size
+            initResponsiveCanvas();
         }
         
         function updateScore() {
@@ -870,3 +908,5 @@
         updateScore();
         gameLoop();
     </script>
+</body>
+</html>
