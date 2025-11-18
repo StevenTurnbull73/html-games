@@ -20,6 +20,7 @@
         
         #gameContainer {
             text-align: center;
+            max-width: 100%;
         }
         
         #score {
@@ -34,6 +35,9 @@
             display: block;
             margin: 0 auto;
             cursor: pointer;
+            /* Make it responsive but keep internal resolution */
+            max-width: 100%;
+            height: auto;
         }
         
         canvas:focus {
@@ -50,12 +54,17 @@
             text-shadow: 3px 3px #000;
             display: none;
             z-index: 10;
+            text-align: center;
+            pointer-events: none;
         }
         
         #instructions {
             margin-top: 20px;
             font-size: 16px;
             color: #888;
+            max-width: 560px;
+            margin-left: auto;
+            margin-right: auto;
         }
         
         .restart {
@@ -63,21 +72,54 @@
             font-size: 18px;
             color: #ffff00;
         }
+
+        #demoButton {
+            margin-top: 10px;
+            padding: 8px 18px;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            color: #ffff00;
+            background: #000;
+            border: 2px solid #ffff00;
+            border-radius: 4px;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        #demoButton:hover {
+            background: #2121de;
+            color: #fff;
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 10px;
+            }
+            #score {
+                font-size: 18px;
+            }
+            #victory {
+                font-size: 32px;
+            }
+            #instructions {
+                font-size: 14px;
+            }
+        }
     </style>
 </head>
 <body>
     <div id="gameContainer">
         <div id="score">SCORE: 0</div>
-        <canvas id="gameCanvas" width="560" height="620" tabindex="0"></canvas>
+        <canvas id="gameCanvas" width="560" height="600" tabindex="0"></canvas>
         <div id="victory">
-            YOU WIN!
-            <div class="restart">Press SPACE to play again</div>
+            <div id="victoryText">YOU WIN!</div>
+            <div class="restart" id="restartText"></div>
         </div>
+        <button id="demoButton">DEMO</button>
         <div id="instructions">
-            <span style="color: #ffff00; font-size: 20px;">Press SPACE BAR to start!</span><br>
-            Use ARROW KEYS to move (press and hold)<br>
-            Eat all pellets to win!<br>
-            Collect cherries for bonus points!
+            <!-- JS will replace this text depending on device -->
         </div>
     </div>
 
@@ -86,10 +128,44 @@
         const ctx = canvas.getContext('2d');
         const scoreElement = document.getElementById('score');
         const victoryElement = document.getElementById('victory');
+        const instructionsElement = document.getElementById('instructions');
+        const demoButton = document.getElementById('demoButton');
+        const victoryText = document.getElementById('victoryText');
+        const restartText = document.getElementById('restartText');
+
+        // Device detection
+        const isTouchDevice = (
+            'ontouchstart' in window ||
+            navigator.maxTouchPoints > 0 ||
+            navigator.msMaxTouchPoints > 0
+        );
+
+        function setInstructions() {
+            if (isTouchDevice) {
+                instructionsElement.innerHTML = `
+                    <span style="color: #ffff00; font-size: 20px;">Tap to start a game.</span><br>
+                    Swipe in any direction to move Pac-Man.<br>
+                    Or tap <strong>DEMO</strong> to see the computer clear the maze.<br>
+                    Eat all pellets to win! Collect cherries for bonus points!
+                `;
+                victoryText.textContent = 'YOU WIN!';
+                restartText.textContent = 'Tap to play again';
+            } else {
+                instructionsElement.innerHTML = `
+                    <span style="color: #ffff00; font-size: 20px;">Press SPACE BAR to start a game.</span><br>
+                    Use ARROW KEYS to move (press and hold).<br>
+                    Or click <strong>DEMO</strong> to see the computer clear the maze.<br>
+                    Eat all pellets to win! Collect cherries for bonus points!
+                `;
+                victoryText.textContent = 'YOU WIN!';
+                restartText.textContent = 'Press SPACE or click to play again';
+            }
+        }
+        setInstructions();
         
-        const TILE_SIZE = 40; // Doubled from 20 for larger graphics
-        const GRID_WIDTH = 14; // Half of original 28
-        const GRID_HEIGHT = 15; // Approximately half of original 31
+        const TILE_SIZE = 40;
+        const GRID_WIDTH = 14;
+        const GRID_HEIGHT = 15;
         
         // Game state
         let score = 0;
@@ -100,15 +176,27 @@
         let fruitX = 7;
         let fruitY = 7;
         const FRUIT_SPAWN_TIME = 600;
-        let fruitHadPellet = false; // Track if cherry replaced a pellet
+        let fruitHadPellet = false;
         let introPlaying = false;
         let munchToggle = false;
-        let scorePopups = []; // Array to track score popups when eating cherries
+        let scorePopups = [];
+        let isDemoMode = false; // demo mode flag
+        let demoPath = [];      // path of tiles for CPU to follow
+        
+        // Movement timing
+        let moveTimer = 0;
+        const NORMAL_MOVE_DELAY = 8; // original speed
+        const DEMO_MOVE_DELAY = 10;  // slightly slower for demo
+        
+        // Swipe tracking
+        let touchStartX = null;
+        let touchStartY = null;
+        let touchMoved = false;
         
         // Audio context for sound effects
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         
-        // Simple maze - very open
+        // Simple maze
         // 0 = empty, 1 = wall, 2 = pellet, 4 = fruit spot
         let maze = [
             [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
@@ -131,12 +219,15 @@
         // Count total pellets
         let totalPellets = 0;
         let pelletsEaten = 0;
-        for (let row of maze) {
-            for (let cell of row) {
-                if (cell === 2) totalPellets++;
+        function countPellets() {
+            totalPellets = 0;
+            for (let row of maze) {
+                for (let cell of row) {
+                    if (cell === 2) totalPellets++;
+                }
             }
         }
-        console.log('Total pellets to collect:', totalPellets);
+        countPellets();
         
         // Pac-Man
         const pacman = {
@@ -149,40 +240,36 @@
         };
         
         function playIntro() {
-            // Accurate Pac-Man intro theme - B4, B5, F#5, D#5 sequence
             const notes = [
-                {freq: 493.88, duration: 0.1},   // B4
-                {freq: 987.77, duration: 0.1},   // B5
-                {freq: 739.99, duration: 0.1},   // F#5
-                {freq: 622.25, duration: 0.1},   // D#5
-                {freq: 987.77, duration: 0.15},  // B5
-                {freq: 739.99, duration: 0.1},   // F#5
-                {freq: 622.25, duration: 0.15},  // D#5
-                
-                {freq: 523.25, duration: 0.1},   // C5
-                {freq: 1046.50, duration: 0.1},  // C6
-                {freq: 783.99, duration: 0.1},   // G5
-                {freq: 659.25, duration: 0.1},   // E5
-                {freq: 1046.50, duration: 0.15}, // C6
-                {freq: 783.99, duration: 0.1},   // G5
-                {freq: 659.25, duration: 0.15},  // E5
-                
-                {freq: 493.88, duration: 0.1},   // B4
-                {freq: 987.77, duration: 0.1},   // B5
-                {freq: 739.99, duration: 0.1},   // F#5
-                {freq: 622.25, duration: 0.1},   // D#5
-                {freq: 987.77, duration: 0.15},  // B5
-                {freq: 739.99, duration: 0.1},   // F#5
-                {freq: 622.25, duration: 0.15},  // D#5
-                
-                {freq: 622.25, duration: 0.1},   // D#5
-                {freq: 659.25, duration: 0.1},   // E5
-                {freq: 698.46, duration: 0.1},   // F5
-                {freq: 739.99, duration: 0.1},   // F#5
-                {freq: 783.99, duration: 0.1},   // G5
-                {freq: 830.61, duration: 0.1},   // G#5
-                {freq: 880.00, duration: 0.1},   // A5
-                {freq: 987.77, duration: 0.3}    // B5 (long)
+                {freq: 493.88, duration: 0.1},
+                {freq: 987.77, duration: 0.1},
+                {freq: 739.99, duration: 0.1},
+                {freq: 622.25, duration: 0.1},
+                {freq: 987.77, duration: 0.15},
+                {freq: 739.99, duration: 0.1},
+                {freq: 622.25, duration: 0.15},
+                {freq: 523.25, duration: 0.1},
+                {freq: 1046.50, duration: 0.1},
+                {freq: 783.99, duration: 0.1},
+                {freq: 659.25, duration: 0.1},
+                {freq: 1046.50, duration: 0.15},
+                {freq: 783.99, duration: 0.1},
+                {freq: 659.25, duration: 0.15},
+                {freq: 493.88, duration: 0.1},
+                {freq: 987.77, duration: 0.1},
+                {freq: 739.99, duration: 0.1},
+                {freq: 622.25, duration: 0.1},
+                {freq: 987.77, duration: 0.15},
+                {freq: 739.99, duration: 0.1},
+                {freq: 622.25, duration: 0.15},
+                {freq: 622.25, duration: 0.1},
+                {freq: 659.25, duration: 0.1},
+                {freq: 698.46, duration: 0.1},
+                {freq: 739.99, duration: 0.1},
+                {freq: 783.99, duration: 0.1},
+                {freq: 830.61, duration: 0.1},
+                {freq: 880.00, duration: 0.1},
+                {freq: 987.77, duration: 0.3}
             ];
             
             let time = audioContext.currentTime + 0.1;
@@ -201,7 +288,7 @@
                 oscillator.start(time);
                 oscillator.stop(time + note.duration);
                 
-                time += note.duration * 0.95; // Slight overlap
+                time += note.duration * 0.95;
             });
         }
         
@@ -277,6 +364,20 @@
                 }, 100);
             }
         }
+
+        function startDemo() {
+            resetGame();
+            isDemoMode = true;
+            demoPath = [];
+            startGame();
+        }
+
+        function startRealGameFromDemoOrTap() {
+            resetGame();
+            isDemoMode = false;
+            demoPath = [];
+            startGame();
+        }
         
         function resetGame() {
             score = 0;
@@ -287,6 +388,8 @@
             fruitTimer = 0;
             fruitHadPellet = false;
             scorePopups = [];
+            isDemoMode = false;
+            demoPath = [];
             pacman.x = 7;
             pacman.y = 11;
             pacman.direction = 0;
@@ -310,17 +413,11 @@
                 [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
             ];
             
+            countPellets();
             updateScore();
             victoryElement.style.display = 'none';
-            
-            // Recount total pellets
-            totalPellets = 0;
-            for (let row of maze) {
-                for (let cell of row) {
-                    if (cell === 2) totalPellets++;
-                }
-            }
-            console.log('Game reset. Total pellets:', totalPellets);
+            // Reset texts to default per device when starting a fresh game
+            setInstructions();
         }
         
         function updateScore() {
@@ -329,31 +426,40 @@
         
         function victory() {
             gameRunning = false;
+
+            // Custom victory text when demo (CPU) wins
+            if (isDemoMode) {
+                victoryText.textContent = 'PAC-MAN WINS!';
+                if (isTouchDevice) {
+                    restartText.textContent = 'Tap to play again';
+                } else {
+                    restartText.textContent = 'Press SPACE or click to play';
+                }
+            }
+
             victoryElement.style.display = 'block';
             playSound('victory');
-            console.log('Victory! All pellets eaten.');
         }
         
-        // Movement timing
-        let moveTimer = 0;
-        const MOVE_DELAY = 8; // Frames between moves (slower pace)
-        
-        // Keyboard controls - move one tile per key press
-        let lastKeyPressed = null;
-        let keyProcessed = true; // Track if current key press has been processed
-        
+        // Keyboard controls
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 e.preventDefault();
-                if (!gameStarted) {
+                
+                if (!gameStarted && !isDemoMode) {
+                    // Start normal game directly via keyboard
                     startGame();
-                } else if (victoryElement.style.display === 'block') {
-                    resetGame();
+                    return;
                 }
-                return;
+                
+                if (victoryElement.style.display === 'block') {
+                    resetGame();
+                    startGame();
+                    return;
+                }
             }
             
-            if (!gameRunning || introPlaying) return;
+            if (!gameRunning || introPlaying || isDemoMode) return;
             
             if (e.code === 'ArrowUp') {
                 e.preventDefault();
@@ -371,6 +477,7 @@
         });
         
         document.addEventListener('keyup', (e) => {
+            if (isDemoMode) return;
             // Stop when arrow key is released
             if (e.code === 'ArrowUp' && pacman.nextDirection === 1) {
                 pacman.nextDirection = 0;
@@ -382,30 +489,187 @@
                 pacman.nextDirection = 0;
             }
         });
+
+        // Demo button: start CPU-controlled demo
+        demoButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            startDemo();
+        });
+
+        // Shared click/tap handler on canvas: normal play only
+        function handlePrimaryAction() {
+            if (victoryElement.style.display === 'block') {
+                resetGame();
+                startGame();
+                return;
+            }
+
+            if (!gameStarted && !isDemoMode) {
+                startGame();
+            }
+        }
         
-        canvas.addEventListener('click', () => canvas.focus());
+        // Mouse click on canvas
+        canvas.addEventListener('click', (e) => {
+            e.preventDefault();
+            canvas.focus();
+            handlePrimaryAction();
+        });
+
+        // Touch controls (swipe + tap)
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                const t = e.touches[0];
+                touchStartX = t.clientX;
+                touchStartY = t.clientY;
+                touchMoved = false;
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            if (touchStartX === null || touchStartY === null) return;
+            const t = e.touches[0];
+            const dx = t.clientX - touchStartX;
+            const dy = t.clientY - touchStartY;
+            const threshold = 30; // minimal swipe distance
+            
+            if (Math.abs(dx) > threshold || Math.abs(dy) > threshold) {
+                touchMoved = true;
+
+                if (!isDemoMode && gameRunning && !introPlaying) {
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        // Horizontal swipe
+                        pacman.nextDirection = dx > 0 ? 2 : 4;
+                    } else {
+                        // Vertical swipe
+                        pacman.nextDirection = dy > 0 ? 3 : 1;
+                    }
+                }
+
+                touchStartX = null;
+                touchStartY = null;
+            }
+            e.preventDefault();
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', (e) => {
+            if (!touchMoved) {
+                handlePrimaryAction();
+            }
+            touchStartX = null;
+            touchStartY = null;
+        });
+
+        canvas.addEventListener('touchcancel', () => {
+            touchStartX = null;
+            touchStartY = null;
+        });
+        
+        // Start with keyboard focus possible
         canvas.focus();
         
         function canMove(x, y) {
             if (x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_HEIGHT) return false;
             return maze[y][x] !== 1;
         }
-        
+
+        // BFS to nearest target (pellet or cherry)
+        function findPathToNearestTarget(startX, startY, targetValues) {
+            const visited = Array.from({ length: GRID_HEIGHT }, () =>
+                Array(GRID_WIDTH).fill(false)
+            );
+            const prev = Array.from({ length: GRID_HEIGHT }, () =>
+                Array(GRID_WIDTH).fill(null)
+            );
+
+            const queue = [];
+            queue.push({ x: startX, y: startY });
+            visited[startY][startX] = true;
+
+            const dirs = [
+                { dx: 0, dy: -1 }, // up
+                { dx: 1, dy: 0 },  // right
+                { dx: 0, dy: 1 },  // down
+                { dx: -1, dy: 0 }  // left
+            ];
+
+            let target = null;
+
+            while (queue.length > 0) {
+                const { x, y } = queue.shift();
+
+                if (!(x === startX && y === startY) && targetValues.includes(maze[y][x])) {
+                    target = { x, y };
+                    break;
+                }
+
+                for (const { dx, dy } of dirs) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (
+                        nx >= 0 && nx < GRID_WIDTH &&
+                        ny >= 0 && ny < GRID_HEIGHT &&
+                        !visited[ny][nx] &&
+                        maze[ny][nx] !== 1
+                    ) {
+                        visited[ny][nx] = true;
+                        prev[ny][nx] = { x, y };
+                        queue.push({ x: nx, y: ny });
+                    }
+                }
+            }
+
+            if (!target) return [];
+
+            const path = [];
+            let cur = target;
+            while (cur.x !== startX || cur.y !== startY) {
+                path.push(cur);
+                cur = prev[cur.y][cur.x];
+            }
+            path.reverse();
+            return path;
+        }
+
         function movePacman() {
             if (!gameRunning) return;
-            
-            // Only move if a direction is set and enough time has passed
-            if (pacman.nextDirection === 0) {
+
+            // Demo mode: CPU plans path using BFS
+            if (isDemoMode) {
+                // Prioritise cherry if active
+                if (fruitActive) {
+                    const pathToFruit = findPathToNearestTarget(pacman.x, pacman.y, [4]);
+                    if (pathToFruit.length > 0) {
+                        demoPath = pathToFruit;
+                    }
+                }
+
+                // If no path yet (or no fruit path), go to nearest pellet
+                if (demoPath.length === 0) {
+                    demoPath = findPathToNearestTarget(pacman.x, pacman.y, [2]);
+                }
+
+                if (demoPath.length === 0) {
+                    pacman.nextDirection = 0;
+                    return;
+                }
+
+                const nextStep = demoPath[0];
+                if (nextStep.y < pacman.y) pacman.nextDirection = 1;      // up
+                else if (nextStep.x > pacman.x) pacman.nextDirection = 2; // right
+                else if (nextStep.y > pacman.y) pacman.nextDirection = 3; // down
+                else if (nextStep.x < pacman.x) pacman.nextDirection = 4; // left
+            } else if (pacman.nextDirection === 0) {
+                // No direction set by player
                 return;
             }
-            
-            // Increment move timer
+
+            // Movement timing
+            const delay = isDemoMode ? DEMO_MOVE_DELAY : NORMAL_MOVE_DELAY;
             moveTimer++;
-            if (moveTimer < MOVE_DELAY) {
-                return; // Not time to move yet
+            if (moveTimer < delay) {
+                return;
             }
-            
-            // Reset move timer
             moveTimer = 0;
             
             let newX = pacman.x;
@@ -420,6 +684,14 @@
                 pacman.x = newX;
                 pacman.y = newY;
                 pacman.direction = pacman.nextDirection;
+
+                // In demo mode, consume path step if reached
+                if (isDemoMode && demoPath.length > 0) {
+                    const step = demoPath[0];
+                    if (step.x === pacman.x && step.y === pacman.y) {
+                        demoPath.shift();
+                    }
+                }
                 
                 // Animate mouth
                 if (pacman.mouthOpening) {
@@ -430,42 +702,40 @@
                     if (pacman.mouthOpen <= 0.1) pacman.mouthOpening = true;
                 }
                 
-                // Check for pellets
+                // Check for pellets / fruit
                 const cell = maze[pacman.y][pacman.x];
                 if (cell === 2) {
                     maze[pacman.y][pacman.x] = 0;
                     score += 10;
                     pelletsEaten++;
-                    console.log('Pellets eaten:', pelletsEaten, '/', totalPellets);
                     updateScore();
                     playSound('munch');
+
+                    // After eating a pellet, force re-plan soon
+                    if (isDemoMode) demoPath = [];
                 } else if (cell === 4) {
                     maze[pacman.y][pacman.x] = 0;
                     score += 100;
                     updateScore();
                     playSound('fruit');
                     
-                    // If cherry replaced a pellet, count it as eaten
                     if (fruitHadPellet) {
                         pelletsEaten++;
-                        console.log('Cherry had pellet! Pellets eaten:', pelletsEaten, '/', totalPellets);
                         fruitHadPellet = false;
                     }
                     
                     fruitActive = false;
                     fruitTimer = 0;
                     
-                    // Add score popup
                     scorePopups.push({
                         x: pacman.x,
                         y: pacman.y,
                         score: 100,
-                        timer: 60 // Display for 60 frames (1 second at 60fps)
+                        timer: 60
                     });
+
+                    if (isDemoMode) demoPath = [];
                 }
-            } else {
-                // Can't move in that direction, but allow continuing to try
-                pacman.direction = pacman.nextDirection;
             }
         }
         
@@ -539,7 +809,7 @@
                 ctx.fillText(popup.score.toString(), px, py);
             }
             
-            ctx.textAlign = 'left'; // Reset
+            ctx.textAlign = 'left';
         }
         
         function update() {
@@ -558,7 +828,6 @@
                 fruitTimer++;
                 if (fruitTimer >= FRUIT_SPAWN_TIME) {
                     fruitActive = true;
-                    // Remember if there was a pellet here
                     fruitHadPellet = (maze[fruitY][fruitX] === 2);
                     maze[fruitY][fruitX] = 4;
                     fruitTimer = 0;
@@ -568,7 +837,6 @@
                 if (fruitTimer >= 300) {
                     fruitActive = false;
                     if (maze[fruitY][fruitX] === 4) {
-                        // Restore pellet if there was one, otherwise leave empty
                         maze[fruitY][fruitX] = fruitHadPellet ? 2 : 0;
                         fruitHadPellet = false;
                     }
@@ -580,7 +848,6 @@
             
             // Check for victory
             if (pelletsEaten >= totalPellets) {
-                console.log('Victory condition met! pelletsEaten:', pelletsEaten, 'totalPellets:', totalPellets);
                 victory();
             }
         }
@@ -603,5 +870,3 @@
         updateScore();
         gameLoop();
     </script>
-</body>
-</html>
